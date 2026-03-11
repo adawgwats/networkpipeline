@@ -21,6 +21,7 @@ The repository is in requirements-definition stage. The immediate goal is to loc
 - Private-by-default handling of user data
 - Source-aware handling of time-sensitive interview information
 - Replaceable components rather than one locked stack
+- Native localhost quick start before Docker or hosted deployment
 
 ## V1 Focus
 
@@ -38,11 +39,16 @@ The repository is in requirements-definition stage. The immediate goal is to loc
 
 ## Docs
 
+- [Design Proposal](./docs/design.md)
 - [Requirements](./docs/requirements.md)
+- [Domain Model](./docs/domain-model.md)
+- [Architecture](./docs/architecture.md)
+- [V1 Stack](./docs/stack.md)
+- [Schema Strategy](./docs/schema.md)
 
 ## Proposed Next Steps
 
-1. Finalize requirements and open questions.
-2. Define the domain model and service boundaries.
-3. Choose the initial extensibility model for AI providers and tools.
-4. Stand up the first local development skeleton.
+1. Review and approve the V1 design proposal.
+2. Refine the data model or architecture if the design changes.
+3. Define the first portable SQL schema and migrations from the approved design.
+4. Begin implementation only after design approval.
