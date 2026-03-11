@@ -6,6 +6,7 @@
 
 It is intended to help users:
 
+- consolidate fragmented job-search context such as chat histories, resumes, cover letters, prior applications, and outreach notes into one reviewed system of record
 - manage connections, recruiters, referrals, companies, roles, and applications as a unified pipeline
 - draft and review outreach safely before sending
 - plan and execute technical interview preparation with current, source-backed context
@@ -29,6 +30,7 @@ The current tooling landscape is fragmented:
 3. Reduce the activation energy required to start and sustain technical interview prep.
 4. Preserve user trust through transparent, inspectable, human-in-the-loop AI behavior.
 5. Keep the core system fully open source and usable across hosted, local, and self-hosted AI stacks.
+6. Build recommendations from a first-class model of the user's own background, goals, assets, and prior job-search activity.
 
 ## 4. Open-Source Requirements
 
@@ -71,6 +73,20 @@ Initial project defaults:
 - `FR-CRM-5`: The system must make shared education context usable in filtering, search, ranking, and outreach drafting.
 - `FR-CRM-6`: The system must support separate but linked pipelines for outreach and applications.
 - `FR-CRM-7`: The system must support task management for follow-ups, prep tasks, and application milestones.
+- `FR-CRM-8`: The system must maintain a first-class candidate profile for the user, including work history, education, skills, target roles, dream-job criteria, acceptable-job criteria, and job-search constraints.
+- `FR-CRM-9`: The system must store and version user-owned application assets such as resumes, cover letters, portfolio links, and referral notes.
+- `FR-CRM-10`: The system must support importing or pasting fragmented job-search context from sources such as chat histories, notes, spreadsheets, and prior application logs.
+- `FR-CRM-11`: The system must extract structured facts from imported context into reviewable candidate, application, outreach, and prep records.
+- `FR-CRM-12`: The system must let the user confirm, edit, or reject extracted facts before they influence recommendations.
+
+### 7.1.1 Connectors And Ingestion
+
+- `FR-CONN-1`: The system must support a connector layer for external data sources used in the job-search process.
+- `FR-CONN-2`: The preferred first email connector for V1 should be a read-only Gmail API integration using user-granted OAuth access.
+- `FR-CONN-3`: The Gmail connector should support bulk ingestion of recent history and incremental sync of new messages after initial connection.
+- `FR-CONN-4`: If Gmail API connection is unavailable because of account policy, OAuth restrictions, or user preference, the system must support fallback ingestion paths such as manual upload, pasted content, forwarded intake mail, or exported message archives.
+- `FR-CONN-5`: Connector outputs must flow through the same extraction, proposal, and review pipeline as other imported context.
+- `FR-CONN-6`: Connector access for email should remain read-only in V1.
 
 ### 7.2 Outreach Copilot
 
@@ -122,6 +138,7 @@ Initial project defaults:
 - `FR-EVAL-2`: The system must support outcome labels such as reply, no reply, too generic, too aggressive, inaccurate, and stale.
 - `FR-EVAL-3`: The system must allow users to review why a message or prep recommendation was generated.
 - `FR-EVAL-4`: The system should support exporting data for offline analysis and future model tuning.
+- `FR-EVAL-5`: The system must persist extraction proposals, review decisions, and provider-run traces separately from canonical business records.
 
 ## 8. Safety And Trust Requirements
 
@@ -145,16 +162,28 @@ Initial project defaults:
 - `NFR-7`: The product should preserve clear data ownership and exportability.
 - `NFR-8`: V0 and V1 should optimize for solo-user workflows and deployment simplicity before collaborative or team-oriented features.
 - `NFR-9`: The first-party user experience for V1 should be web-first, with API and CLI support treated as secondary interfaces.
+- `NFR-10`: V1 should support a zero-extra-service local mode on common modern PCs using embedded SQL storage and local file storage.
+- `NFR-11`: The physical schema should remain portable between SQLite and PostgreSQL and avoid hard dependence on vendor-specific database features in V1.
+- `NFR-12`: The default deployment experience should be a native localhost run without requiring Docker.
+- `NFR-13`: Docker Compose should be a supported secondary deployment option for contributors and advanced setups, not the only path.
 
 ## 10. Data Model Requirements
 
 Minimum first-class entities:
 
+- `CandidateProfile`
+- `ExperienceRecord`
+- `ConnectorAccount`
+- `ConnectorSyncState`
 - `Person`
 - `EducationRecord`
 - `Company`
 - `Role`
 - `Application`
+- `ApplicationAsset`
+- `ConversationImport`
+- `FactProposal`
+- `ReviewDecision`
 - `ReferralPath`
 - `OutreachThread`
 - `MessageDraft`
@@ -164,16 +193,21 @@ Minimum first-class entities:
 - `Task`
 - `Source`
 - `EvidenceItem`
+- `ProviderRun`
 - `OutcomeLabel`
 
 Minimum relationship constraints:
 
-- `DM-1`: A person may be linked to multiple companies and roles.
-- `DM-2`: A person may be linked to multiple education records.
-- `DM-3`: A role may be linked to multiple contacts, applications, and interview loops.
-- `DM-4`: Outreach threads must be linkable to people, roles, and companies.
-- `DM-5`: Prep topics and sessions must be linkable to roles, interview loops, and evidence items.
-- `DM-6`: Evidence items must be usable by both outreach and prep workflows.
+- `DM-1`: The user must have one canonical candidate profile.
+- `DM-2`: A candidate profile may be linked to multiple experience records, education records, application assets, and conversation imports.
+- `DM-3`: A candidate profile may be linked to multiple connector accounts and sync states.
+- `DM-4`: A person may be linked to multiple companies and roles.
+- `DM-5`: A person may be linked to multiple education records.
+- `DM-6`: A role may be linked to multiple contacts, applications, and interview loops.
+- `DM-7`: Outreach threads must be linkable to people, roles, and companies.
+- `DM-8`: Prep topics and sessions must be linkable to roles, interview loops, and evidence items.
+- `DM-9`: Evidence items must be usable by both outreach and prep workflows.
+- `DM-10`: Applications should be linkable to the resume, cover letter, and referral artifacts used for that application.
 
 ## 11. Architecture Requirements
 
@@ -182,6 +216,7 @@ Minimum relationship constraints:
 - `ARCH-3`: The system should support a plugin or adapter model for AI providers and external tools.
 - `ARCH-4`: The system should expose prompts and workflow definitions as editable configuration where practical.
 - `ARCH-5`: The system should avoid hiding critical logic inside one vendor-specific orchestration product.
+- `ARCH-6`: The system should separate canonical records, imported raw artifacts, AI-generated fact proposals, and provider-run traces.
 
 ## 12. V1 Scope
 
@@ -189,6 +224,11 @@ V1 should include:
 
 - solo-user-first workflows and deployment assumptions
 - a web UI for the core CRM, outreach, and prep workflows
+- candidate profile consolidation from user-entered data and imported artifacts
+- a read-only Gmail API connector as the preferred first email-ingestion path
+- fallback ingestion options when Gmail API access is unavailable
+- a native localhost deployment path as the default quick-start experience
+- a supported Docker Compose path for standardized advanced deployment
 - career CRM with core entities and relationship tracking
 - outreach ranking and draft generation with manual approval
 - technical prep planning with backlog management
