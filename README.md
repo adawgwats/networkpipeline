@@ -95,9 +95,11 @@ Claude: Staged in Gmail. Label: networkpipeline/bridge-ask/p_7a2.
 
 ## Docs
 
+- [System and Flow Diagrams](./docs/system-flow.md)
 - [Criteria System](./docs/criteria.md)
 - [Intro Path Engine](./docs/intro-paths.md)
 - [Architecture](./docs/architecture.md)
+- [Evaluation Harness](./docs/evaluation.md)
 - [Requirements](./docs/requirements.md)
 - [Design Proposal](./docs/design.md)
 - [Domain Model](./docs/domain-model.md)
