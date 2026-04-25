@@ -6,12 +6,13 @@
   "exports": {
     ".": "./src/index.ts",
     "./extract": "./src/extract/index.ts",
+    "./gates": "./src/gates/index.ts",
     "./provider": "./src/provider/index.ts"
   },
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "typecheck": "tsc --project tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/__tests__/schema.test.ts src/__tests__/prompt.test.ts src/__tests__/extract.test.ts"
+    "test": "node --import tsx --test src/__tests__/schema.test.ts src/__tests__/prompt.test.ts src/__tests__/extract.test.ts src/__tests__/gates.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
