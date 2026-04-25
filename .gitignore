@@ -1,18 +1,13 @@
-# Python
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.venv/
-venv/
-
 # Node
 node_modules/
 
-# Env and local config
+# Local runtime data (criteria.yaml, sqlite db, artifacts)
+.networkpipeline/
+
+# Env files
 .env
 .env.*
+!.env.example
 
 # OS/editor
 .DS_Store

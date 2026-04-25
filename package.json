@@ -1,0 +1,22 @@
+{
+  "name": "networkpipeline",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude-Code-native MCP server for targeted, values-aware job search: programmable filter + warm-intro engine.",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run typecheck && npm run test",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}
