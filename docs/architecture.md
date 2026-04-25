@@ -2,465 +2,316 @@
 
 ## 1. Goals
 
-The V1 architecture should satisfy four constraints at the same time:
+V1 is a Claude-Code-native assistant that helps a job seeker:
 
-1. stay easy to self-host for solo users
-2. preserve clean boundaries between domain logic and AI providers
-3. support long-running background work such as research and draft generation
-4. remain simple enough to ship as a modular monolith first
+1. Filter postings against a versioned, user-owned criteria file (hard gates + values refusals + soft preferences).
+2. Find the highest-leverage warm-intro path into roles that pass the filter.
+3. Draft both bridge-ask and target messages, staged into Gmail via Anthropic's built-in Gmail MCP tool.
 
-## 2. Recommended Shape
+Architectural constraints:
 
-V1 should start as a modular monolith with separately deployable components:
+- `Claude-Code-first`: the primary interface is Claude Code. A minimal web UI exists for review/approval, not as the driver.
+- `No credential custody`: Gmail and Calendar access goes through Anthropic's MCP tools, never through NetworkPipeline-held OAuth credentials.
+- `Local-first`: SQLite + local filesystem by default. Self-hosting is a first-class path.
+- `Draft-only`: no outbound sending without explicit human approval.
+- `Leverage not replace`: we orchestrate LinkedIn, Gmail, Calendar, Indeed, Scholar Gateway via MCP — we do not rebuild what they already do.
 
-- `web`: browser UI for CRM, outreach, prep, review, and settings
-- `api`: main application server and domain boundary
-- `jobs`: background execution for AI tasks, evidence ingestion, ranking refreshes, and async imports
-- `db`: SQL database with `SQLite` as the default local mode and `PostgreSQL` as the higher-concurrency option
-- `artifact_store`: local disk by default, with optional S3-compatible storage for upgraded deployments
-- `connector_layer`: source-specific ingestion adapters, with Gmail API read-only as the preferred first email connector
-
-This is intentionally not a microservice architecture. V1 does not need the operational cost.
-
-Recommended deployment modes:
-
-- `default local mode`: native localhost run with web + api + in-process jobs + SQLite + local filesystem
-- `docker mode`: Docker Compose with the same app modules, optionally adding PostgreSQL and a separate worker
-- `upgraded mode`: server-style deployment with PostgreSQL + optional object storage
-
-## 3. Top-Level Component Diagram
+## 2. Top-Level Shape
 
 ```text
-+---------+      HTTPS      +---------+      SQL      +------------+
-| Browser | <-------------> |   API   | <-----------> | SQL Store  |
-+---------+                 +---------+               +------------+
-                                |
-                                | job dispatch
-                                v
-                           +--------------+
-                           | Jobs Runtime |
-                           +--------------+
-                                |
-                    +----------+------------+-----------+
-                    |                       |           |
-                    v                       v           v
-              +------------+        +-------------+ +------------+
-              | AI Adapter |        | Source Fetch| | Connectors |
-              +------------+        +-------------+ +------------+
-                    |                       |           |
-                    v                       v           v
-             hosted/local LLMs       public/user data   Gmail/fallback inputs
+┌─────────────────────────────────────────────────────────────┐
+│                       Claude Code                           │
+│  (primary user interface; orchestrator of all MCP tools)    │
+└─────────┬───────────────┬─────────────────┬─────────────────┘
+          │               │                 │
+          │ stdio         │ MCP             │ MCP
+          ▼               ▼                 ▼
+┌──────────────────┐  ┌────────────────┐  ┌────────────────────┐
+│ NetworkPipeline  │  │ Anthropic      │  │ Other MCP tools    │
+│ MCP server       │  │ built-in MCP:  │  │ (user-installed)   │
+│ (this project)   │  │  - Gmail       │  │  - Indeed          │
+│                  │  │  - Calendar    │  │  - Scholar Gateway │
+│                  │  │                │  │  - optional enrich │
+└─────────┬────────┘  └────────────────┘  └────────────────────┘
+          │
+          ▼
+┌──────────────────────────────────────────────┐
+│ Local SQLite (canonical + staging + traces)  │
+│ Local filesystem (criteria.yaml, resumes)    │
+└──────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ Minimal Next.js review UI (optional, localhost only)        │
+│ Connects to NetworkPipeline over HTTP transport             │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+## 3. Transports
+
+NetworkPipeline exposes two MCP transports backed by the same core server:
+
+- `stdio`: default for Claude Code sessions.
+- `HTTP on 127.0.0.1`: used by the review UI and by power users who want to drive the server programmatically.
+
+Both transports serve the identical tool surface.
 
 ## 4. Core Modules
 
-The codebase should be split into domain-driven modules inside the API and worker:
+Inside the API/worker:
 
-- `crm`
-- `outreach`
-- `prep`
-- `research`
-- `evaluation`
-- `ai_runtime`
-- `connectors`
-- `tasks`
-- `settings`
+- `criteria` — loading, validating, merging (extends/overlays), versioning of `candidate_criteria.yaml`
+- `evaluator` — two-stage pipeline: extract → hard gates → values check → soft score
+- `graph` — people, edges, warmth components, path enumeration and ranking
+- `outreach` — bridge-ask and target drafting, approval gates, Gmail hand-off
+- `ingest` — LinkedIn CSV, resume, Gmail/Calendar MCP callbacks, Indeed MCP
+- `mcp_server` — tool-surface definitions, argument validation, result shaping
+- `observability` — `mcp_invocations`, `provider_runs`, cost/cache tracking
+- `settings` — paths, feature flags, retention windows
 
-Each module should own:
-
-- domain entities
-- validation rules
-- commands and queries
-- persistence mappings
-- public service interfaces
+Each module owns: entities, validation, commands/queries, persistence, service interfaces.
 
 ## 5. Data Storage
 
 ### 5.1 Primary Database
 
-Use a portable SQL-first design.
+SQLite by default. Schema is PostgreSQL-compatible but SQLite is the supported V1 target.
 
-Recommended choice:
+Three logical layers:
 
-- `SQLite` as the default canonical database for solo-user and local-first deployments
-- `PostgreSQL` as an optional upgrade path for higher write concurrency, multi-process worker execution, or hosted deployments
+1. `canonical` — approved records (people, roles, applications, evaluations, bridge_asks)
+2. `staging` — raw imports and AI proposals awaiting review (`conversation_imports`, `fact_proposals`, `review_decisions`)
+3. `trace` — `mcp_invocations`, `provider_runs`, `candidate_criteria_versions`, `job_evaluations`
 
-Why SQL:
+See [schema.md](./schema.md) for physical table details.
 
-- the core product is relational and stateful
-- approvals, outreach state, prep state, and evidence links need strong integrity
-- SQL is a better fit than document or graph stores for the primary system of record
+### 5.2 Files
 
-Why `SQLite` by default:
+- `~/.networkpipeline/criteria.yaml` — source-of-truth criteria file
+- `~/.networkpipeline/data/networkpipeline.sqlite` — primary DB
+- `~/.networkpipeline/artifacts/` — resumes, LinkedIn CSV exports, rendered reports
+- `~/.networkpipeline/logs/` — rolling logs for debug
 
-- zero extra service to install or operate
-- excellent fit for a solo-user workflow product
-- fast enough for the expected V1 workload on modern PCs
-- simple backup, portability, and local-first ergonomics
-
-Why keep the schema `PostgreSQL`-compatible:
-
-- preserves an upgrade path without redesigning the data model
-- supports a future dedicated worker and higher-concurrency deployment mode
-- allows optional use of richer database capabilities later without making them mandatory now
-
-Why not make `PostgreSQL` the default:
-
-- it adds setup and operational burden for solo users
-- it is unnecessary for most expected V1 local workloads
-- it would make the self-hosting story worse on the machines most users already own
-
-### 5.2 Files And Exports
-
-Support either:
-
-- local file storage for default local and self-hosted single-node setups
-- S3-compatible object storage for upgraded deployments
-
-Initial uses:
-
-- CSV imports and exports
-- generated report exports
-- optional attachments
+Environment override: `NETWORKPIPELINE_HOME`.
 
 ### 5.3 Search And Retrieval
 
-V1 should avoid introducing a separate search cluster unless required.
-
-Suggested path:
-
-1. use SQL-native filtering plus `SQLite FTS5` or PostgreSQL text search depending on the selected database
-2. add embedding support only when evidence retrieval quality requires it
-3. delay external vector databases until usage proves they are necessary
+SQL-native filtering is sufficient for V1. Full-text search via SQLite FTS5 for free-text fields (notes, draft bodies). No vector DB.
 
 ## 6. Request And Job Flow
 
-### 6.1 Synchronous Flows
+### 6.1 Synchronous
 
-Keep these synchronous in V1:
+Handled on the request thread:
 
-- CRUD operations on core entities
-- filtering and list views
-- basic task updates
-- draft approval
-- lightweight ranking reads from cached scores
+- All MCP tool calls from Claude Code (evaluate_job, find_intro_paths, draft_*, record_*)
+- Web UI reads (list views, detail views, approval diffs)
+- Criteria file load + validate
 
-### 6.2 Asynchronous Flows
+### 6.2 Asynchronous
 
-Run these in the jobs runtime:
+Handled in an in-process job runner (V1) or a separate worker (upgraded deployments):
 
-- outreach draft generation
-- prep plan generation
-- evidence ingestion and summarization
-- ranking recomputation
-- import jobs
-- connector sync jobs
-- export jobs
+- `recompute_warmth_components` after interaction ingest
+- `recompute_intro_paths` after new edges or new `person_attributes`
+- `bulk_evaluate_jobs` for batched evaluation requests
+- `draft_generation` when drafting is delegated to an async model call (not always the case)
+- `active_learning_proposals` triggered by thumbs-up/down
 
-This keeps the web UI responsive and makes provider failures easier to isolate.
+## 7. MCP Tool Surface
 
-V1 local-mode note:
+NetworkPipeline exposes one MCP server with these tools (full schemas in [mcp-interface.md](./mcp-interface.md) when that doc lands):
 
-- in `SQLite` local mode, these jobs can run in-process without a separate external queue service
-- in upgraded deployments, the same job interface can be backed by a separate worker process
+Criteria and evaluation:
 
-## 7. AI Runtime Boundary
+- `ingest_resume(path)`
+- `get_criteria()` / `explain_criteria()`
+- `evaluate_job(url_or_text)` / `bulk_evaluate_jobs(urls)`
+- `propose_criteria_change(evaluation_id, user_feedback)`
+- `accept_criteria_change(proposal_id)`
+- `criteria_history()`
 
-The most important architecture rule is that model providers stay behind a stable adapter layer.
+Graph and ingest:
 
-### 7.1 Adapter Interface
+- `ingest_linkedin_csv(path)`
+- `ingest_gmail_interactions(since, person_hints?)` — returns instruction payload for Claude
+- `record_gmail_interactions(interactions)` — callback from Claude
+- `ingest_calendar_interactions(since)` / `record_calendar_interactions(interactions)`
+- `find_target_persons(company, role_title?)`
 
-Each provider adapter should implement a common contract similar to:
+Paths and outreach:
 
-```text
-generate(task_type, prompt, context, options) -> result
-embed(texts, options) -> vectors
-healthcheck() -> status
-```
+- `find_intro_paths(company, role_title?, k)`
+- `draft_bridge_message(path_id, intent)`
+- `draft_target_message(person_id, role_id?, intent)`
+- `approve_and_stage_gmail_draft(message_draft_id)` — returns payload for Claude to pass to `mcp__claude_ai_Gmail__create_draft`
+- `mark_bridge_ask_outcome(bridge_ask_id, outcome)`
 
-The domain layer should not know vendor-specific request shapes.
+Pipeline health:
 
-### 7.2 Supported Provider Types
+- `pipeline_status(stale_days?)`
+- `advance_application(application_id, status)`
+- `log_outcome(thread_id, outcome)`
 
-V1 target adapters:
+## 8. Gmail And Calendar Integration
 
-- OpenAI-compatible HTTP endpoints
-- Anthropic-style adapter
-- Ollama or similar local runtime
-- generic HTTP adapter for self-hosted inference
+NetworkPipeline does not hold Gmail or Calendar credentials. The integration pattern is:
 
-### 7.3 Task Profiles
+1. NetworkPipeline returns an `IngestInstruction` describing what Gmail queries or Calendar ranges to fetch.
+2. Claude Code calls Anthropic's Gmail/Calendar MCP tools with those queries.
+3. Claude Code extracts structured facts against a schema NetworkPipeline publishes.
+4. Claude Code calls `record_*` callback tools on NetworkPipeline with the structured result.
+5. NetworkPipeline persists and recomputes derived state.
 
-The runtime should support task-specific model selection:
+This keeps credentials inside Claude's sandbox and makes the round-trip deterministic.
 
-- `contact_ranking`
-- `outreach_draft`
-- `prep_plan`
-- `research_synthesis`
-- `evaluation_summary`
+For draft staging, the flow reverses:
 
-This lets users route different tasks to different models without changing domain code.
+1. User approves a draft in NetworkPipeline (via web UI or conversational approval).
+2. Claude calls `approve_and_stage_gmail_draft(message_draft_id)` which returns a Gmail-ready payload.
+3. Claude calls `mcp__claude_ai_Gmail__create_draft` with that payload.
+4. Claude calls `mcp__claude_ai_Gmail__label_thread` with NetworkPipeline-managed labels.
+5. Claude reports back the Gmail thread id to NetworkPipeline via a `record_gmail_draft_staged` callback.
 
-## 7.5 Connector Boundary
+Gmail labels used:
 
-External data ingestion should sit behind a connector layer with a stable interface.
+- `networkpipeline/outreach/target`
+- `networkpipeline/outreach/bridge-ask`
+- `networkpipeline/app/{role_id}`
+- `networkpipeline/replied`
 
-Suggested connector contract:
+Labels are the shared-state handle between Gmail and SQLite.
 
-```text
-connect() -> connection_state
-sync(cursor, options) -> import_batch
-disconnect() -> connection_state
-healthcheck() -> status
-```
+## 9. Criteria Pipeline
 
-V1 connector priority:
+Detailed spec in [criteria.md](./criteria.md).
 
-1. `Gmail API read-only` for email-based application and outreach ingestion
-2. fallback import connectors such as uploaded export files, pasted content, or forwarded intake mail
+Important architectural note: `hard_gate_check` is pure code with no LLM involvement. This is an intentional separation — hard gates must be auditable and deterministic. `values_check` is a narrow LLM prompt with a binary output. `soft_score` is an LLM prompt anchored by calibration examples.
 
-Important rule:
+Every call through this pipeline writes:
 
-- all connectors must feed the same staging, extraction, and review pipeline
+- One `mcp_invocations` row
+- Up to three `provider_runs` rows (extract, values, score)
+- One `job_evaluations` row with the criteria version used
 
-## 8. Evidence And Freshness Pipeline
+## 10. Intro Path Engine
 
-Research and freshness should be handled as a first-class subsystem.
+Detailed spec in [intro-paths.md](./intro-paths.md).
 
-Suggested flow:
+Key architectural decisions:
 
-1. create or import a `Source`
-2. fetch or store source content
-3. extract one or more `EvidenceItem` records
-4. assign freshness and confidence metadata
-5. link evidence to relevant `Role`, `Company`, `Person`, or `PrepTopic`
-6. use evidence in ranking, drafting, and prep recommendations
+- Paths cached per `(target_company, target_role_title, criteria_version_id)`. Cache invalidation on new edges, new interactions, or criteria bump.
+- BFS over first-degree connections plus `person_to_person_edges`, capped at 3 hops.
+- Ranking is deterministic given inputs; reproducibility matters for evaluation.
 
-Important rule:
+## 11. Outreach Safety Pipeline
 
-- every time-sensitive recommendation should be traceable to one or more evidence items
+Every message draft — bridge or target — flows through:
 
-## 8.5 Candidate Context Intake Pipeline
+1. Draft generation with rationale and evidence attached.
+2. Safety preflight: `do_not_contact`, cooldown, follow-up cap, values check on the target company.
+3. Explicit user approval.
+4. Payload staging for Claude to hand off to Gmail.
+5. Manual send by user in Gmail.
+6. Reply detection via next `ingest_gmail_interactions` sync.
 
-Before outreach or prep recommendations become trustworthy, the system needs a canonical view of the user.
-
-Suggested flow:
-
-1. user uploads or pastes resumes, cover letters, application logs, outreach logs, or exported chat history
-2. API stores raw artifacts and creates `ConversationImport` or `ApplicationAsset` records
-3. worker extracts candidate facts, applications, contacts, and prior outreach context
-4. extracted facts are written as pending structured updates to `CandidateProfile`, `ExperienceRecord`, and related entities
-5. user reviews, edits, and approves the extracted facts
-6. only approved facts are used by ranking, drafting, and prep recommendations
-
-Important rule:
-
-- the system should not silently treat raw imported chat context as canonical truth without user review
-
-## 8.6 Email Connector Strategy
-
-Preferred first path:
-
-1. user authorizes a read-only Gmail connector
-2. connector performs an initial recent-history sync
-3. connector stores raw message metadata and extracted text as imported context
-4. extraction produces candidate facts, application hints, outreach hints, and recruiter/contact hints
-5. user reviews proposals before canonical records are updated
-
-Fallback paths:
-
-- uploaded export files
-- pasted message content
-- forwarded intake mailbox
-
-Design rule:
-
-- fallback methods should reuse the same downstream review pipeline instead of creating parallel business logic
-
-## 9. Outreach Safety Pipeline
-
-Outbound messaging should remain draft-only in V1.
-
-Suggested flow:
-
-1. user selects a role and candidate contacts
-2. API creates or updates `OutreachThread`
-3. worker generates one or more `MessageDraft` records
-4. UI shows rationale, evidence, and any cooldown warnings
-5. user edits and approves a draft
-6. system records approval, but external sending remains manual
-7. user records whether the message was sent and whether a reply was received
-
-Safety checks should run before a draft is shown as ready:
-
-- contact is not marked `do_not_contact`
-- cooldown window has passed
-- follow-up cap has not been exceeded
-- evidence used for personalization is not stale or unsupported
-
-## 10. Prep Engine Shape
-
-The prep engine should be hybrid by design.
-
-Deterministic layer:
-
-- coverage tracking
-- session scheduling
-- spaced revisit rules
-- due dates
-- confidence tracking
-- struggle-signal accumulation
-
-LLM-assisted layer:
-
-- plan generation
-- next-best-action suggestions
-- topic explanations
-- synthesis of recent interview reports
-- creation of practice sets from evidence and target roles
-
-This keeps the system auditable while still benefiting from flexible synthesis.
-
-## 11. Integration Strategy
-
-### 11.1 Practice Tools
-
-Practice integrations should be low-risk and replaceable.
-
-V1 should start with:
-
-- link-based references to external practice items
-- user-entered progress and notes
-- import adapters when a stable official or user-controlled path exists
-
-The architecture should not depend on fragile automation against third-party platforms.
-
-### 11.2 External Messaging Surfaces
-
-Messaging surfaces such as LinkedIn or email should be treated as external execution layers.
-
-V1 should support:
-
-- copy-ready message drafts
-- exportable message histories
-- manual sent and reply logging
-
-V1 should not require:
-
-- automated browser control
-- scraping-based graph extraction
-- autonomous direct messaging
-
-### 11.3 Email Ingestion Connectors
-
-V1 should prioritize:
-
-- read-only Gmail API access as the preferred email connector
-
-V1 should also support fallback ingestion when the preferred route fails:
-
-- uploaded archives or exports
-- pasted message content
-- forwarded copies to an intake address
+No path in the code writes directly to Gmail.
 
 ## 12. Observability And Evaluation
 
-The system should log:
+Every LLM call writes a `provider_runs` row (V1: all Claude-Code-driven; V2: multi-provider). Every MCP tool call writes an `mcp_invocations` row with input hash, output hash, latency, cost where available.
 
-- provider runs
-- prompt versions
-- user edits
-- approvals
-- outcome labels
-- errors and retries
+The eval harness (detailed in [evaluation.md](./evaluation.md) when that doc lands) reports:
 
-V1 trace storage can live in the primary SQL database. If needed later, the project can add a dedicated tracing backend without changing the domain model.
+- Filter precision/recall against user thumbs-up/down labels, per criteria version.
+- Path precision against user-pursued paths.
+- Bridge-ask → committed-intro rate.
+- Target-message reply rate with path provenance.
+- Prompt-cache hit ratios and cost per approved draft.
+
+Evaluation runs are published periodically in the repo as markdown snapshots.
 
 ## 13. Auth And Multi-Tenancy
 
-V1 should optimize for solo users.
+V1 is single-user. The MCP server binds to localhost only on both transports. No auth.
 
-Suggested approach:
+Multi-tenant is explicitly out of scope for V1.
 
-- local account bootstrap or simple single-user auth
-- one owner workspace by default
-- explicit domain separation so multi-user workspaces can be added later
+## 14. Deployment
 
-Avoid early complexity from:
+V1 supported deployments, in priority order:
 
-- RBAC
-- team invites
-- per-org billing
-- multi-tenant isolation layers
+1. Native local install via `npx @networkpipeline/mcp-server` registered with Claude Code.
+2. Self-hosted single-node via `npm run start:local` for the full web UI.
+3. Docker Compose for contributors who want a reproducible setup.
 
-## 14. Deployment Model
+The only required services are:
 
-Recommended initial deployment options:
+- `mcp-server` process
+- `sqlite` file
+- optional `web` process for the review UI
 
-- native local development with embedded `SQLite`
-- native self-hosted single-node production with embedded `SQLite`
-- optional Docker Compose deployment for standardized local or upgraded setups
-- optional later support for Kubernetes, not required for V1
-
-Minimum services for a default deployment:
-
-- web
-- api
-- embedded SQL database
-- in-process jobs runtime
-
-Optional services:
-
-- separate worker
-- PostgreSQL
-- local model runtime
-- object storage
-
-Deployment recommendation order:
-
-1. native localhost quick start
-2. Docker Compose
-3. hosted or server-style deployment
-
-## 15. Suggested Repository Layout
+## 15. Repository Layout
 
 ```text
 apps/
-  web/
-  api/
-  worker/
+  mcp-server/       # stdio + HTTP MCP server
+  web/              # Next.js review UI (optional)
+  worker/           # in-process by default; extractable later
 packages/
-  domain/
-  ai-adapters/
-  config/
-  ui/
+  criteria/         # schema, validator, merge, versioning
+  evaluator/        # extract + gates + values + soft score
+  graph/            # people, edges, warmth, path ranking
+  outreach/         # drafting, approval, Gmail hand-off
+  ingest/           # LinkedIn, Gmail/Calendar callbacks, Indeed
+  domain/           # shared entities, enums
+  ai-adapters/      # V1: claude_code only; V2+: openai, local
+  config/           # settings, paths, env loading
+  ui/               # shared UI components
 docs/
   requirements.md
+  design.md
   domain-model.md
-  architecture.md
+  schema.md
+  architecture.md   # this doc
+  criteria.md
+  intro-paths.md
+  stack.md
+  future/
+    prep.md
+    career-ops-integration.md
 ```
 
-This keeps UI, runtime, and shared domain code clearly separated.
+## 16. What V1 Deliberately Excludes
 
-## 16. Build Order
+These are out of V1 scope to keep the wedge sharp:
 
-Recommended implementation order:
+- Technical interview prep engine (moved to `docs/future/prep.md`).
+- Multi-provider AI adapter layer (V1 is Claude Code only).
+- Custom Gmail OAuth connector (replaced by Anthropic's Gmail MCP).
+- LinkedIn scraping or browser automation.
+- Full-fat kanban that competes with Huntr/Teal (we ship minimal list views).
+- Multi-user workspaces, RBAC, or team collaboration.
 
-1. shared domain package with schemas and status enums
-2. portable SQL schema and migrations
-3. API for CRM entities and tasks
-4. web UI for people, roles, and outreach threads
-5. jobs runtime with one OpenAI-compatible adapter
-6. draft-generation and approval workflow
-7. prep topics, sessions, and practice items
-8. evidence ingestion and freshness tracking
+## 17. Build Order
 
-## 17. Deferred Decisions
+1. Shared `domain` and `criteria` packages with Zod schemas and enums.
+2. Portable SQL schema and migrations.
+3. `evaluator` with `extract_job_facts` + `hard_gate_check` + `values_check` + `soft_score`.
+4. MCP server skeleton with `evaluate_job`, `get_criteria`, `criteria_history`.
+5. `criteria-init` interview flow (Claude Code skill).
+6. `graph` module: LinkedIn CSV ingest, `person_to_person_edges` inference, warmth scaffolding.
+7. `ingest_gmail_interactions` callback pattern + `record_gmail_interactions`.
+8. `find_intro_paths` with ranking.
+9. `draft_bridge_message` and `draft_target_message`.
+10. `approve_and_stage_gmail_draft` hand-off.
+11. Minimal Next.js review UI.
+12. Evaluation harness and first published snapshot.
 
-These can wait until after the first code skeleton:
+## 18. Deferred Decisions
 
-- whether embeddings are needed in V1
-- whether a separate queue backend is necessary beyond local in-process jobs
-- whether PostgreSQL mode needs a dedicated job runner such as `pg-boss`
+- Whether to sign community criteria overlays to prevent supply-chain issues.
+- Whether to promote the `/job-fit` skill into its own repo separate from the MCP server.
+- Whether willingness estimation is reliable enough to be a V1 ranking input or starts display-only.
+- When to introduce a second AI provider for eval comparison (V2+).
 
-Reference stack decisions are captured in [stack.md](./stack.md).
+Reference stack decisions live in [stack.md](./stack.md).
