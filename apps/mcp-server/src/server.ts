@@ -4,7 +4,7 @@ import type { ZodRawShape } from "zod";
 import type { Runtime } from "./runtime.js";
 import {
   buildInvocationRecord,
-  JsonlFileSink,
+  SqliteSink,
   type ObservabilitySink
 } from "./observability.js";
 import { ToolRegistry } from "./registry.js";
@@ -12,7 +12,7 @@ import { makeEvaluateJobTool } from "./tools/evaluate-job.js";
 
 export type BuildServerOptions = {
   runtime: Runtime;
-  /** Defaults to JsonlFileSink at the user's NETWORKPIPELINE_HOME. */
+  /** Defaults to SqliteSink writing through runtime.repositories.mcpInvocations. */
   observability?: ObservabilitySink;
   /** Override server name (default: networkpipeline). */
   name?: string;
@@ -33,7 +33,9 @@ export type BuildServerOptions = {
  * the SDK and the test harness exercise identical code paths.
  */
 export function buildServer(options: BuildServerOptions) {
-  const sink = options.observability ?? new JsonlFileSink();
+  const sink =
+    options.observability ??
+    new SqliteSink(options.runtime.repositories.mcpInvocations);
   const registry = new ToolRegistry();
 
   // Register V1 tools. Future tools (find_intro_paths, draft_*, etc.)

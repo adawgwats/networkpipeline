@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import type { McpInvocationsRepository } from "@networkpipeline/db";
 
 /**
  * MCPInvocation is one row's worth of observability per tool call.
@@ -50,14 +51,65 @@ export class InMemorySink implements ObservabilitySink {
 }
 
 /**
+ * SqliteSink: persists invocations into the `mcp_invocations` table via
+ * @networkpipeline/db. This is the V1 production sink — replaces the
+ * earlier JSONL-as-system-of-record arrangement now that schema work
+ * in #3 has landed.
+ *
+ * The `meta` field on MCPInvocation is JSON-encoded to TEXT for
+ * portability with the schema's `meta_json` column.
+ */
+export class SqliteSink implements ObservabilitySink {
+  constructor(private readonly repo: McpInvocationsRepository) {}
+
+  record(inv: MCPInvocation): void {
+    this.repo.insert({
+      id: inv.id,
+      tool_name: inv.tool_name,
+      args_hash: inv.args_hash,
+      result_kind: inv.result_kind,
+      result_summary: inv.result_summary,
+      started_at: inv.started_at,
+      latency_ms: inv.latency_ms,
+      meta_json: inv.meta ? JSON.stringify(inv.meta) : null
+    });
+  }
+}
+
+/**
+ * BroadcastSink: writes each invocation to multiple sinks. Used to keep
+ * the JSONL trail alongside the SQL system of record as a redundant
+ * on-disk audit log.
+ */
+export class BroadcastSink implements ObservabilitySink {
+  constructor(private readonly sinks: ObservabilitySink[]) {}
+
+  record(inv: MCPInvocation): void {
+    for (const s of this.sinks) {
+      try {
+        s.record(inv);
+      } catch (err) {
+        // One sink's failure must not block another. Surfacing to
+        // stderr is OK because stdout is reserved for MCP protocol.
+        process.stderr.write(
+          `[networkpipeline mcp-server] sink error: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`
+        );
+      }
+    }
+  }
+}
+
+/**
  * JsonlFileSink: append-only JSONL log on disk. One line per invocation.
  * Crash-safe (uses appendFileSync) and survives across server restarts.
  *
  * Default location: `$NETWORKPIPELINE_HOME/logs/mcp_invocations.jsonl`,
  * falling back to `~/.networkpipeline/logs/mcp_invocations.jsonl`.
  *
- * Will be migrated to SQL once schema work in #3 lands. The on-disk
- * JSONL trail will remain as a backup-of-record for the eval harness.
+ * No longer the V1 system of record — the SQLite `mcp_invocations`
+ * table is. Kept as a redundant on-disk audit log via BroadcastSink.
  */
 export class JsonlFileSink implements ObservabilitySink {
   readonly path: string;

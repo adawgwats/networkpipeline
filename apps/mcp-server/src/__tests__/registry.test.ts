@@ -3,6 +3,13 @@ import { describe, it } from "node:test";
 import { z } from "zod";
 import { MockJsonOutputProvider } from "@networkpipeline/evaluator";
 import type { CandidateCriteria } from "@networkpipeline/criteria";
+import {
+  CandidateCriteriaVersionsRepository,
+  JobEvaluationsRepository,
+  McpInvocationsRepository,
+  ProviderRunsRepository,
+  openDb
+} from "@networkpipeline/db";
 import { objectInput, ToolRegistry } from "../registry.js";
 import { makeEvaluateJobTool } from "../tools/evaluate-job.js";
 import type { Runtime } from "../runtime.js";
@@ -34,10 +41,20 @@ function baseCriteria(): CandidateCriteria {
 }
 
 function makeRuntime(provider: MockJsonOutputProvider): Runtime {
+  const connection = openDb({ path: ":memory:" });
+  const repositories = {
+    mcpInvocations: new McpInvocationsRepository(connection.db),
+    providerRuns: new ProviderRunsRepository(connection.db),
+    jobEvaluations: new JobEvaluationsRepository(connection.db),
+    criteriaVersions: new CandidateCriteriaVersionsRepository(connection.db)
+  };
   return {
     criteria: baseCriteria(),
     criteriaPath: "/tmp/test-criteria.yaml",
-    provider
+    provider,
+    connection,
+    repositories,
+    criteriaVersionId: "cv-test-1"
   };
 }
 

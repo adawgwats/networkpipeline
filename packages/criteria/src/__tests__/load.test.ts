@@ -53,10 +53,12 @@ describe("loadCriteriaFromFile", () => {
   });
 
   it("loads and validates a real YAML file", async () => {
-    const { path, criteria } = await loadCriteriaFromFile(yamlPath);
+    const { path, criteria, yamlText } = await loadCriteriaFromFile(yamlPath);
     assert.equal(path, yamlPath);
     assert.equal(criteria.version, 1);
     assert.equal(criteria.profile.display_name, "Andrew Watson");
+    assert.ok(yamlText.includes("Andrew Watson"));
+    assert.ok(yamlText.length > 0);
   });
 
   it("throws CriteriaFileNotFoundError for missing file", async () => {

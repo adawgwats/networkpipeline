@@ -27,11 +27,18 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // Graceful shutdown — both signals close the transport cleanly so any
-  // in-flight observability writes flush before exit.
+  // Graceful shutdown — close the transport, then close the SQLite
+  // connection so WAL checkpoints land before the process exits.
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
-      void server.close().finally(() => process.exit(0));
+      void server.close().finally(() => {
+        try {
+          runtime.connection.close();
+        } catch {
+          // best effort; process is exiting anyway
+        }
+        process.exit(0);
+      });
     });
   }
 }

@@ -42,12 +42,12 @@ export function parseCriteriaFromYaml(yamlText: string): CandidateCriteria {
 
 export async function loadCriteriaFromFile(
   overridePath?: string
-): Promise<{ path: string; criteria: CandidateCriteria }> {
+): Promise<{ path: string; criteria: CandidateCriteria; yamlText: string }> {
   const path = resolveCriteriaPath(overridePath);
   if (!existsSync(path)) {
     throw new CriteriaFileNotFoundError(path);
   }
   const yamlText = await readFile(path, "utf-8");
   const criteria = parseCriteriaFromYaml(yamlText);
-  return { path, criteria };
+  return { path, criteria, yamlText };
 }
