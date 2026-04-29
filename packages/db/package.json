@@ -1,0 +1,24 @@
+{
+  "name": "@networkpipeline/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts",
+    "./repositories": "./src/repositories/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/__tests__/connection.test.ts src/__tests__/mcp_invocations.test.ts src/__tests__/provider_runs.test.ts src/__tests__/job_evaluations.test.ts src/__tests__/criteria_versions.test.ts"
+  },
+  "dependencies": {
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.13",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
