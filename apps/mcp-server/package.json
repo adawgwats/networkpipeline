@@ -1,0 +1,31 @@
+{
+  "name": "@networkpipeline/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "NetworkPipeline MCP server — exposes evaluate_job and related tools to Claude Code over stdio.",
+  "bin": {
+    "networkpipeline-mcp": "./dist/bin.js"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "tsx src/bin.ts",
+    "start": "tsx src/bin.ts",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/__tests__/registry.test.ts src/__tests__/observability.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@networkpipeline/criteria": "0.1.0",
+    "@networkpipeline/evaluator": "0.1.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.13",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
