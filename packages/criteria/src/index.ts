@@ -73,3 +73,16 @@ export {
   resolveReferencePath,
   type ReferenceKind
 } from "./resolve.js";
+
+export { serializeCriteriaToYaml } from "./serialize.js";
+
+export {
+  bumpVersion,
+  type BumpVersionOptions,
+  type UpdatedVia
+} from "./version.js";
+
+export {
+  writeCriteriaToFile,
+  type WriteCriteriaOptions
+} from "./write.js";

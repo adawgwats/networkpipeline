@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "typecheck": "tsc --project tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/__tests__/validate.test.ts src/__tests__/load.test.ts src/__tests__/merge.test.ts"
+    "test": "node --import tsx --test src/__tests__/validate.test.ts src/__tests__/load.test.ts src/__tests__/merge.test.ts src/__tests__/write.test.ts"
   },
   "dependencies": {
     "yaml": "^2.7.0",
