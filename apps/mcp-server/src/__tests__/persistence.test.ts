@@ -3,9 +3,12 @@ import { describe, it, after } from "node:test";
 import type { CandidateCriteria } from "@networkpipeline/criteria";
 import {
   CandidateCriteriaVersionsRepository,
+  DiscoveredPostingsRepository,
   JobEvaluationsRepository,
   McpInvocationsRepository,
   ProviderRunsRepository,
+  SavedSearchesRepository,
+  SearchRunsRepository,
   openDb,
   type Connection
 } from "@networkpipeline/db";
@@ -50,7 +53,10 @@ function buildRepos(connection: Connection): Repositories {
     mcpInvocations: new McpInvocationsRepository(connection.db),
     providerRuns: new ProviderRunsRepository(connection.db),
     jobEvaluations: new JobEvaluationsRepository(connection.db),
-    criteriaVersions: new CandidateCriteriaVersionsRepository(connection.db)
+    criteriaVersions: new CandidateCriteriaVersionsRepository(connection.db),
+    savedSearches: new SavedSearchesRepository(connection.db),
+    searchRuns: new SearchRunsRepository(connection.db),
+    discoveredPostings: new DiscoveredPostingsRepository(connection.db)
   };
 }
 

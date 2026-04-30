@@ -8,7 +8,14 @@ import {
   type ObservabilitySink
 } from "./observability.js";
 import { ToolRegistry } from "./registry.js";
+import { makeBulkEvaluateJobsTool } from "./tools/bulk-evaluate-jobs.js";
+import { makeCreateSavedSearchTool } from "./tools/create-saved-search.js";
+import { makeDeleteSavedSearchTool } from "./tools/delete-saved-search.js";
+import { makeDiscoverJobsTool } from "./tools/discover-jobs.js";
 import { makeEvaluateJobTool } from "./tools/evaluate-job.js";
+import { makeListSavedSearchesTool } from "./tools/list-saved-searches.js";
+import { makeRecordDiscoveredPostingsTool } from "./tools/record-discovered-postings.js";
+import { makeRunSavedSearchTool } from "./tools/run-saved-search.js";
 
 export type BuildServerOptions = {
   runtime: Runtime;
@@ -41,6 +48,17 @@ export function buildServer(options: BuildServerOptions) {
   // Register V1 tools. Future tools (find_intro_paths, draft_*, etc.)
   // get added here as they land.
   registry.register(makeEvaluateJobTool(options.runtime));
+
+  // Discovery — saved-search CRUD.
+  registry.register(makeCreateSavedSearchTool(options.runtime));
+  registry.register(makeListSavedSearchesTool(options.runtime));
+  registry.register(makeDeleteSavedSearchTool(options.runtime));
+
+  // Discovery — search execution.
+  registry.register(makeDiscoverJobsTool(options.runtime));
+  registry.register(makeRecordDiscoveredPostingsTool(options.runtime));
+  registry.register(makeBulkEvaluateJobsTool(options.runtime));
+  registry.register(makeRunSavedSearchTool(options.runtime));
 
   const server = new McpServer({
     name: options.name ?? "networkpipeline",
