@@ -9,12 +9,17 @@
     "./connectors/indeed": "./src/connectors/indeed.ts",
     "./connectors/greenhouse": "./src/connectors/greenhouse.ts",
     "./connectors/lever": "./src/connectors/lever.ts",
-    "./connectors/ashby": "./src/connectors/ashby.ts"
+    "./connectors/ashby": "./src/connectors/ashby.ts",
+    "./connectors/career_page": "./src/connectors/career_page.ts",
+    "./connectors/recruiter_email": "./src/connectors/recruiter_email.ts",
+    "./connectors/manual_paste": "./src/connectors/manual_paste.ts",
+    "./registry": "./src/registry.ts",
+    "./orchestrator": "./src/orchestrator.ts"
   },
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "typecheck": "tsc --project tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/__tests__/seniority.test.ts src/__tests__/html.test.ts src/__tests__/dedup.test.ts src/__tests__/indeed.test.ts src/__tests__/greenhouse.test.ts src/__tests__/lever.test.ts src/__tests__/ashby.test.ts"
+    "test": "node --import tsx --test src/__tests__/seniority.test.ts src/__tests__/html.test.ts src/__tests__/dedup.test.ts src/__tests__/indeed.test.ts src/__tests__/greenhouse.test.ts src/__tests__/lever.test.ts src/__tests__/ashby.test.ts src/__tests__/career_page.test.ts src/__tests__/recruiter_email.test.ts src/__tests__/manual_paste.test.ts src/__tests__/registry.test.ts src/__tests__/orchestrator.test.ts"
   },
   "dependencies": {
     "@networkpipeline/criteria": "0.1.0",

@@ -5,9 +5,12 @@ import { MockJsonOutputProvider } from "@networkpipeline/evaluator";
 import type { CandidateCriteria } from "@networkpipeline/criteria";
 import {
   CandidateCriteriaVersionsRepository,
+  DiscoveredPostingsRepository,
   JobEvaluationsRepository,
   McpInvocationsRepository,
   ProviderRunsRepository,
+  SavedSearchesRepository,
+  SearchRunsRepository,
   openDb
 } from "@networkpipeline/db";
 import { objectInput, ToolRegistry } from "../registry.js";
@@ -46,7 +49,10 @@ function makeRuntime(provider: MockJsonOutputProvider): Runtime {
     mcpInvocations: new McpInvocationsRepository(connection.db),
     providerRuns: new ProviderRunsRepository(connection.db),
     jobEvaluations: new JobEvaluationsRepository(connection.db),
-    criteriaVersions: new CandidateCriteriaVersionsRepository(connection.db)
+    criteriaVersions: new CandidateCriteriaVersionsRepository(connection.db),
+    savedSearches: new SavedSearchesRepository(connection.db),
+    searchRuns: new SearchRunsRepository(connection.db),
+    discoveredPostings: new DiscoveredPostingsRepository(connection.db)
   };
   return {
     criteria: baseCriteria(),

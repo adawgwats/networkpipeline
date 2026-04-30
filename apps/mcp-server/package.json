@@ -15,12 +15,13 @@
     "dev": "tsx src/bin.ts",
     "start": "tsx src/bin.ts",
     "typecheck": "tsc --project tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/__tests__/registry.test.ts src/__tests__/observability.test.ts src/__tests__/persistence.test.ts"
+    "test": "node --import tsx --test src/__tests__/registry.test.ts src/__tests__/observability.test.ts src/__tests__/persistence.test.ts src/__tests__/discovery_tools.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@networkpipeline/criteria": "0.1.0",
     "@networkpipeline/db": "0.1.0",
+    "@networkpipeline/discovery": "0.1.0",
     "@networkpipeline/evaluator": "0.1.0",
     "zod": "^3.24.2"
   },

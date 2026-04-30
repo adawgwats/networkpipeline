@@ -3,9 +3,12 @@ import { loadCriteriaFromFile } from "@networkpipeline/criteria";
 import type { CandidateCriteria } from "@networkpipeline/criteria";
 import {
   CandidateCriteriaVersionsRepository,
+  DiscoveredPostingsRepository,
   JobEvaluationsRepository,
   McpInvocationsRepository,
   ProviderRunsRepository,
+  SavedSearchesRepository,
+  SearchRunsRepository,
   openDb,
   type Connection
 } from "@networkpipeline/db";
@@ -19,6 +22,9 @@ export type Repositories = {
   providerRuns: ProviderRunsRepository;
   jobEvaluations: JobEvaluationsRepository;
   criteriaVersions: CandidateCriteriaVersionsRepository;
+  savedSearches: SavedSearchesRepository;
+  searchRuns: SearchRunsRepository;
+  discoveredPostings: DiscoveredPostingsRepository;
 };
 
 export type Runtime = {
@@ -93,7 +99,10 @@ export async function loadRuntime(
     mcpInvocations: new McpInvocationsRepository(connection.db),
     providerRuns: new ProviderRunsRepository(connection.db),
     jobEvaluations: new JobEvaluationsRepository(connection.db),
-    criteriaVersions: new CandidateCriteriaVersionsRepository(connection.db)
+    criteriaVersions: new CandidateCriteriaVersionsRepository(connection.db),
+    savedSearches: new SavedSearchesRepository(connection.db),
+    searchRuns: new SearchRunsRepository(connection.db),
+    discoveredPostings: new DiscoveredPostingsRepository(connection.db)
   };
 
   const criteriaVersionId = mirrorCriteriaToDb(
