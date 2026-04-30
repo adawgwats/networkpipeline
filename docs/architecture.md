@@ -4,9 +4,10 @@
 
 V1 is a Claude-Code-native assistant that helps a job seeker:
 
-1. Filter postings against a versioned, user-owned criteria file (hard gates + values refusals + soft preferences).
-2. Find the highest-leverage warm-intro path into roles that pass the filter.
-3. Draft both bridge-ask and target messages, staged into Gmail via Anthropic's built-in Gmail MCP tool.
+1. **Discover** — actively search across Indeed, Greenhouse / Lever / Ashby public boards, company career pages, and recruiter forwards into Gmail. Aggregate, dedup, and pre-filter by metadata before paying for extraction. Spec: [`docs/discovery.md`](./discovery.md).
+2. **Filter** — what discovery surfaces, against a versioned, user-owned criteria file (hard gates + values refusals + soft preferences). The filter pipeline is unchanged; it now sits behind active discovery rather than treating user-paste as the only intake.
+3. **Leverage** — find the highest-leverage warm-intro path into roles that pass the filter.
+4. **Draft** — both bridge-ask and target messages, staged into Gmail via Anthropic's built-in Gmail MCP tool.
 
 Architectural constraints:
 
@@ -26,13 +27,25 @@ Architectural constraints:
           │               │                 │
           │ stdio         │ MCP             │ MCP
           ▼               ▼                 ▼
-┌──────────────────┐  ┌────────────────┐  ┌────────────────────┐
-│ NetworkPipeline  │  │ Anthropic      │  │ Other MCP tools    │
-│ MCP server       │  │ built-in MCP:  │  │ (user-installed)   │
-│ (this project)   │  │  - Gmail       │  │  - Indeed          │
-│                  │  │  - Calendar    │  │  - Scholar Gateway │
-│                  │  │                │  │  - optional enrich │
-└─────────┬────────┘  └────────────────┘  └────────────────────┘
+┌──────────────────────┐ ┌────────────────┐ ┌──────────────────┐
+│ NetworkPipeline      │ │ Anthropic      │ │ Other MCP tools  │
+│ MCP server           │ │ built-in MCP:  │ │ (user-installed) │
+│ (this project)       │ │  - Gmail       │ │  - Indeed        │
+│ ┌──────────────────┐ │ │  - Calendar    │ │  - Scholar       │
+│ │ Source Connectors│ │ │  - WebFetch    │ │  - opt. enrich   │
+│ │  - indeed        │ │ └────────────────┘ └──────────────────┘
+│ │  - greenhouse    │ │
+│ │  - lever         │ │
+│ │  - ashby         │ │
+│ │  - career_page   │ │
+│ │  - recruiter_    │ │
+│ │      email       │ │
+│ │  - manual_paste  │ │
+│ └──────────────────┘ │
+│ Criteria · Evaluator │
+│ Discovery · Graph    │
+│ Outreach · Ingest    │
+└─────────┬────────────┘
           │
           ▼
 ┌──────────────────────────────────────────────┐
@@ -45,6 +58,8 @@ Architectural constraints:
 │ Connects to NetworkPipeline over HTTP transport             │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+The Source Connectors group lives inside the NetworkPipeline MCP server but is logically distinct: connectors return `IngestInstruction` payloads that Claude Code executes against the relevant external service (Indeed MCP, Gmail MCP, Greenhouse/Lever/Ashby HTTP, WebFetch on career pages). Claude calls back with structured results via `record_discovered_postings`. Same callback pattern as Gmail/Calendar ingest (§8).
 
 ## 3. Transports
 
@@ -60,10 +75,11 @@ Both transports serve the identical tool surface.
 Inside the API/worker:
 
 - `criteria` — loading, validating, merging (extends/overlays), versioning of `candidate_criteria.yaml`
+- `discovery` — source-connector contract, per-connector implementations (indeed, greenhouse, lever, ashby, career_page, recruiter_email, manual_paste), dedup helpers (`input_hash`, URL canonicalization, preferred-source rules), pre-extraction gate dispatch, saved-search lifecycle (`SavedSearch`, `SearchRun`, `DiscoveredPosting`). Spec: [`discovery.md`](./discovery.md).
 - `evaluator` — two-stage pipeline: extract → hard gates → values check → soft score
 - `graph` — people, edges, warmth components, path enumeration and ranking
 - `outreach` — bridge-ask and target drafting, approval gates, Gmail hand-off
-- `ingest` — LinkedIn CSV, resume, Gmail/Calendar MCP callbacks, Indeed MCP
+- `ingest` — graph-side data ingest: LinkedIn CSV, resume parsing, Gmail/Calendar interaction callbacks for warmth scoring. Note `ingest` is a peer of `discovery`, not the same module — `discovery` owns posting-side intake (multi-source job postings), `ingest` owns graph-side intake (people, interactions, warmth signals). They share the instruction-callback pattern but differ in target tables and downstream consumers.
 - `mcp_server` — tool-surface definitions, argument validation, result shaping
 - `observability` — `mcp_invocations`, `provider_runs`, cost/cache tracking
 - `settings` — paths, feature flags, retention windows
@@ -104,6 +120,7 @@ SQL-native filtering is sufficient for V1. Full-text search via SQLite FTS5 for 
 Handled on the request thread:
 
 - All MCP tool calls from Claude Code (evaluate_job, find_intro_paths, draft_*, record_*)
+- `discover_jobs`, `record_discovered_postings`, `create_saved_search`, `list_saved_searches`, `delete_saved_search`
 - Web UI reads (list views, detail views, approval diffs)
 - Criteria file load + validate
 
@@ -113,13 +130,22 @@ Handled in an in-process job runner (V1) or a separate worker (upgraded deployme
 
 - `recompute_warmth_components` after interaction ingest
 - `recompute_intro_paths` after new edges or new `person_attributes`
-- `bulk_evaluate_jobs` for batched evaluation requests
+- `bulk_evaluate_jobs` for batched evaluation requests (primary caller: discovery)
+- `run_saved_search` — composes `discover_jobs` → callback → `bulk_evaluate_jobs` end-to-end; long-running because of cross-source fan-out and per-survivor extraction
 - `draft_generation` when drafting is delegated to an async model call (not always the case)
 - `active_learning_proposals` triggered by thumbs-up/down
 
 ## 7. MCP Tool Surface
 
 NetworkPipeline exposes one MCP server with these tools (full schemas in [mcp-interface.md](./mcp-interface.md) when that doc lands):
+
+Discovery (spec: [`discovery.md`](./discovery.md) §9):
+
+- `discover_jobs(saved_search_id?, ad_hoc_query?)` — returns `IngestInstruction` for Claude to fan out
+- `record_discovered_postings(saved_search_id, postings[])` — callback from Claude; runs pre-extraction gates + dedup
+- `bulk_evaluate_jobs(urls_or_payloads[])` — parallelized `evaluate_job`; primary caller is discovery
+- `run_saved_search(saved_search_id)` — composes the above three; the user-facing entrypoint
+- `create_saved_search(spec)` / `list_saved_searches()` / `delete_saved_search(id)`
 
 Criteria and evaluation:
 
@@ -152,17 +178,22 @@ Pipeline health:
 - `advance_application(application_id, status)`
 - `log_outcome(thread_id, outcome)`
 
-## 8. Gmail And Calendar Integration
+## 8. External-Source Integration (Instruction-Callback Pattern)
 
-NetworkPipeline does not hold Gmail or Calendar credentials. The integration pattern is:
+NetworkPipeline does not hold credentials for any external service. The integration pattern is identical across Gmail, Calendar, Indeed, Greenhouse, Lever, Ashby, and WebFetch-driven career pages:
 
-1. NetworkPipeline returns an `IngestInstruction` describing what Gmail queries or Calendar ranges to fetch.
-2. Claude Code calls Anthropic's Gmail/Calendar MCP tools with those queries.
+1. NetworkPipeline returns an `IngestInstruction` describing what queries / endpoints / job-search parameters to fetch.
+2. Claude Code calls the relevant MCP tool or HTTP endpoint with those parameters:
+   - Gmail: `mcp__claude_ai_Gmail__search_threads` + `get_thread`
+   - Calendar: `mcp__claude_ai_Google_Calendar__list_events`
+   - Indeed: `mcp__claude_ai_Indeed__search_jobs` + `get_job_details`
+   - Greenhouse / Lever / Ashby: HTTP `GET` against the public board API (no auth)
+   - Career pages: `WebFetch` with an extractor schema
 3. Claude Code extracts structured facts against a schema NetworkPipeline publishes.
-4. Claude Code calls `record_*` callback tools on NetworkPipeline with the structured result.
+4. Claude Code calls a `record_*` callback tool on NetworkPipeline with the structured result (`record_gmail_interactions`, `record_calendar_interactions`, `record_discovered_postings`).
 5. NetworkPipeline persists and recomputes derived state.
 
-This keeps credentials inside Claude's sandbox and makes the round-trip deterministic.
+This keeps credentials inside Claude's sandbox and makes the round-trip deterministic. The pattern abstracts the source: adding a new source means writing one `SourceConnector` (`docs/discovery.md` §3), not extending the architecture.
 
 For draft staging, the flow reverses:
 
@@ -186,6 +217,8 @@ Labels are the shared-state handle between Gmail and SQLite.
 Detailed spec in [criteria.md](./criteria.md).
 
 Important architectural note: `hard_gate_check` is pure code with no LLM involvement. This is an intentional separation — hard gates must be auditable and deterministic. `values_check` is a narrow LLM prompt with a binary output. `soft_score` is an LLM prompt anchored by calibration examples.
+
+The hard-gate set splits bipartitely: roughly half the gates can decide rejection from connector-supplied posting metadata alone (no LLM extraction needed), and the other half need `extracted_facts`. The discovery layer (`docs/discovery.md` §5) runs the pre-extraction subset on every discovered posting before paying for `extract_job_facts`. Forward reference: [`docs/criteria.md`](./criteria.md) §6.5 defines the bipartite split; [`docs/discovery.md`](./discovery.md) §5 is the cost-engineering rationale.
 
 Every call through this pipeline writes:
 
@@ -259,10 +292,11 @@ apps/
   worker/           # in-process by default; extractable later
 packages/
   criteria/         # schema, validator, merge, versioning
+  discovery/        # source connectors, dedup, pre-extraction gates, saved searches
   evaluator/        # extract + gates + values + soft score
   graph/            # people, edges, warmth, path ranking
   outreach/         # drafting, approval, Gmail hand-off
-  ingest/           # LinkedIn, Gmail/Calendar callbacks, Indeed
+  ingest/           # LinkedIn, Gmail/Calendar interaction callbacks (graph-side)
   domain/           # shared entities, enums
   ai-adapters/      # V1: claude_code only; V2+: openai, local
   config/           # settings, paths, env loading
@@ -274,7 +308,10 @@ docs/
   schema.md
   architecture.md   # this doc
   criteria.md
+  discovery.md
   intro-paths.md
+  evaluation.md
+  system-flow.md
   stack.md
   future/
     prep.md
@@ -287,25 +324,30 @@ These are out of V1 scope to keep the wedge sharp:
 
 - Technical interview prep engine (moved to `docs/future/prep.md`).
 - Multi-provider AI adapter layer (V1 is Claude Code only).
-- Custom Gmail OAuth connector (replaced by Anthropic's Gmail MCP).
-- LinkedIn scraping or browser automation.
+- Custom Gmail/Calendar OAuth connector (replaced by Anthropic's hosted MCP tools).
+- **LinkedIn scraping or browser automation.** No public LinkedIn job-search API; we accept reduced LinkedIn coverage as a feature, not a bug. Recruiter forwards into Gmail and user-pasted URLs cover the cases where it matters. Browser automation against LinkedIn is account-banning and ToS-violating; out of scope and stays out of scope.
+- **Scheduling / cron / push notifications.** V1 discovery is user-triggered (`run my morning searches`, `/morning`). Cron is V2 (`docs/discovery.md` §12, `docs/evaluation.md` §10).
+- **Auto-apply.** Discovery surfaces; user reviews; user approves outreach drafts; user sends from Gmail. No path in code submits an application.
+- **Auto-send of any message on any platform.** Same rule everywhere — draft-only.
+- **Private board APIs** (Greenhouse-private, Lever auth API, internal Ashby views). V1 only supports public boards.
 - Full-fat kanban that competes with Huntr/Teal (we ship minimal list views).
 - Multi-user workspaces, RBAC, or team collaboration.
 
 ## 17. Build Order
 
-1. Shared `domain` and `criteria` packages with Zod schemas and enums.
-2. Portable SQL schema and migrations.
-3. `evaluator` with `extract_job_facts` + `hard_gate_check` + `values_check` + `soft_score`.
-4. MCP server skeleton with `evaluate_job`, `get_criteria`, `criteria_history`.
-5. `criteria-init` interview flow (Claude Code skill).
-6. `graph` module: LinkedIn CSV ingest, `person_to_person_edges` inference, warmth scaffolding.
-7. `ingest_gmail_interactions` callback pattern + `record_gmail_interactions`.
-8. `find_intro_paths` with ranking.
-9. `draft_bridge_message` and `draft_target_message`.
-10. `approve_and_stage_gmail_draft` hand-off.
-11. Minimal Next.js review UI.
-12. Evaluation harness and first published snapshot.
+1. Shared `domain` and `criteria` packages with Zod schemas and enums (`criteria-validator`).
+2. Portable SQL schema and migrations (canonical, staging, trace; plus discovery tables: `saved_searches`, `search_runs`, `discovered_postings`).
+3. `discovery` package + V1 connectors: `SourceConnector` interface, then greenhouse / lever / ashby / indeed / career_page / recruiter_email / manual_paste connectors. Includes the pre-extraction gate dispatch (shared with `evaluator`) and dedup helpers.
+4. `evaluator` pipeline: `extract_job_facts` + `hard_gate_check` (with bipartite gate split) + `values_check` + `soft_score`.
+5. MCP server: `evaluate_job`, `bulk_evaluate_jobs`, the discovery tool group (`run_saved_search`, `discover_jobs`, `record_discovered_postings`, `create_saved_search`, `list_saved_searches`, `delete_saved_search`), `get_criteria`, `criteria_history`.
+6. `criteria-init` interview flow (Claude Code skill) and `/morning` skill wrapping `run_saved_search`.
+7. `graph` module: LinkedIn CSV ingest, `person_to_person_edges` inference, warmth scaffolding.
+8. `ingest_gmail_interactions` callback pattern + `record_gmail_interactions`.
+9. `find_intro_paths` with ranking.
+10. `draft_bridge_message` and `draft_target_message`.
+11. `approve_and_stage_gmail_draft` hand-off.
+12. Minimal Next.js review UI.
+13. Evaluation harness and first published snapshot.
 
 ## 18. Deferred Decisions
 

@@ -163,6 +163,39 @@ Gates run in this order. On first failure, pipeline short-circuits.
 
 Each gate emits a stable reason code of the form `hard_gate:<gate_name>:<specific_value>` on failure.
 
+### 6.5 Pre-Extraction vs Post-Extraction Gates
+
+The 10 gates in §6.4 split bipartitely on whether they need LLM-extracted facts. Approximately half can decide rejection from connector-supplied posting metadata alone (no `extract_job_facts` call required). The discovery layer (`docs/discovery.md` §5) consumes the pre-extraction subset to drop obvious-reject postings *before* paying for extraction. Same gate code, same reason-code taxonomy (§11) — just dispatched earlier in the pipeline.
+
+#### Pre-extraction (metadata only)
+
+Run on `NormalizedDiscoveredPosting` (`docs/discovery.md` §3) before any LLM call.
+
+- `must_not_contain_phrases` — substring scan over `title + description_text` if the connector returned a description; over `title + location_text + raw_metadata_json` snippet otherwise. Same case-insensitive logic as the post-extraction path; the only difference is the haystack source.
+- `must_not_have.company` — exact match (case-insensitive) on the connector-supplied `company` field. Greenhouse / Lever / Ashby return the company slug verbatim; Indeed returns the employer string. This is the highest-value pre-extraction gate.
+- `must_not_have.location_requirement` — when the connector populates `location_text` and the criteria gate matches a location string directly. Defers to the post-extraction path when the metadata is ambiguous (e.g., "Multiple locations").
+- `must_have.location_allowed` — same fields, opposite polarity.
+- `must_have.employment_type` — matches against `employment_type_hint` when the connector exposes it (Greenhouse `metadata`, Lever `categories.commitment`, Ashby `employmentType`). Indeed's metadata is unreliable here — defer.
+- `must_not_have.role_seniority` (partial) — title-regex pass for `Senior`, `Sr.`, `Staff`, `Principal`, `Distinguished`, `Lead`, `Director`, `VP`, `Junior`, `Jr.`, `Intern`. When the title yields an unambiguous band signal *and* every signal falls inside the blocked set, reject. When the title is ambiguous, defer to the post-extraction path.
+
+#### Post-extraction (need LLM-extracted facts)
+
+Run inside the existing `evaluate_job` flow (§10) exactly as today. Discovery never relaxes these.
+
+- `must_not_have.industry` — needs `extracted_facts.industry_tags`. The connector's metadata (department / category strings) is too noisy to substitute.
+- `must_not_have.required_clearance` — pre-extraction can do an opportunistic first-pass regex over `title + snippet` for "TS/SCI", "Top Secret", "Active Clearance" hits and reject early; full coverage requires `extracted_facts.required_clearance` because clearance language is often body-only.
+- `must_have.years_experience` — needs `extracted_facts.required_yoe.min`. No connector reliably exposes this.
+- `must_not_have.role_seniority` (full) — when the title is ambiguous (e.g., "Engineer", "ML Practitioner"), the band must come from `extracted_facts.seniority_signals`.
+- `must_have.work_authorization` — needs `extracted_facts.work_authorization_constraints`. Sponsorship hints are body-only.
+
+#### Reason-code parity
+
+Pre-extraction rejections write the same `hard_gate:<gate_name>:<value>` reason code that the post-extraction path would have written. A pre-extraction reject also persists to `discovered_postings.pre_filter_status = "rejected"` with no `job_evaluations` row, so eval-harness queries that compute `pre_extraction_rejection_rate` can trace the savings (`docs/evaluation.md` §3, `docs/discovery.md` §5.4).
+
+#### Why this isn't a separate gate set
+
+Gate semantics are unchanged. The bipartite split is a dispatch optimization, not a new policy surface. The same `criteria.yaml`, same reason codes, same overlay rules apply in both phases.
+
 ## 7. `values_refusals`
 
 Free-text refusals enforced by a narrow LLM check. Each refusal is one or two sentences.
@@ -380,6 +413,7 @@ Each file includes a `README.md` snippet with its assumed audience and the const
 
 ## 17. Related Docs
 
+- [Discovery Layer](./discovery.md) — consumes the pre-extraction subset of §6.5
 - [Intro Path Engine](./intro-paths.md)
 - [Architecture](./architecture.md)
 - [Evaluation Harness](./evaluation.md)
