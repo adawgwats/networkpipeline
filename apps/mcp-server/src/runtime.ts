@@ -14,7 +14,9 @@ import {
 } from "@networkpipeline/db";
 import {
   AnthropicJsonOutputProvider,
-  type JsonOutputProvider
+  ClaudeCodeJsonOutputProvider,
+  type JsonOutputProvider,
+  type SamplingDelegate
 } from "@networkpipeline/evaluator";
 
 export type Repositories = {
@@ -46,6 +48,23 @@ export type Runtime = {
   criteriaVersionId: string;
 };
 
+/**
+ * Provider selection strategy.
+ *
+ *   - "claude_code": route LLM calls through the user's Claude Code session
+ *     via MCP `sampling/createMessage`. Requires a `samplingDelegate`.
+ *     Inference is billed against the Claude Code Max subscription, so no
+ *     Anthropic API key is needed.
+ *   - "anthropic": call the Anthropic API directly with an API key. Used
+ *     for CI / automation / multi-user contexts where there is no Claude
+ *     Code session driving the work.
+ *   - "auto" (default): pick "claude_code" if a `samplingDelegate` is
+ *     provided, otherwise fall back to "anthropic". This preserves
+ *     backward-compat for existing API-key-based setups while making the
+ *     in-Claude-Code path zero-config when a delegate is wired up.
+ */
+export type ProviderKind = "claude_code" | "anthropic" | "auto";
+
 export type LoadRuntimeOptions = {
   /** Override criteria file path. */
   criteriaPath?: string;
@@ -54,8 +73,20 @@ export type LoadRuntimeOptions = {
   /** Override Anthropic default model. Falls back to evaluator default. */
   anthropicModel?: string;
   /**
-   * Inject a provider instead of constructing the Anthropic adapter.
-   * Used by tests to avoid real API calls.
+   * Provider selection. Defaults to "auto" — see {@link ProviderKind}.
+   * "claude_code" requires `samplingDelegate`. "anthropic" requires a key.
+   */
+  providerKind?: ProviderKind;
+  /**
+   * Sampling delegate used when the resolved provider is "claude_code".
+   * The MCP server constructs this lambda after the SDK's McpServer is
+   * built, since sampling is a server-to-client primitive that depends
+   * on a connected transport.
+   */
+  samplingDelegate?: SamplingDelegate;
+  /**
+   * Inject a provider instead of constructing one. Used by tests to
+   * avoid real API calls.
    */
   providerOverride?: JsonOutputProvider;
   /**
@@ -85,12 +116,7 @@ export async function loadRuntime(
     options.criteriaPath
   );
 
-  const provider =
-    options.providerOverride ??
-    new AnthropicJsonOutputProvider({
-      apiKey: options.anthropicApiKey,
-      defaultModel: options.anthropicModel
-    });
+  const provider = options.providerOverride ?? buildProvider(options);
 
   const connection =
     options.connectionOverride ?? openDb({ path: options.dbPath });
@@ -119,6 +145,53 @@ export async function loadRuntime(
     repositories,
     criteriaVersionId
   };
+}
+
+/**
+ * Resolve a JsonOutputProvider from LoadRuntimeOptions.
+ *
+ * Resolution rules:
+ *   - explicit `providerKind: "claude_code"`: requires `samplingDelegate`,
+ *     throws otherwise.
+ *   - explicit `providerKind: "anthropic"`: constructs the API-key adapter
+ *     (which itself throws if the key is missing).
+ *   - default (`"auto"` or undefined): if a `samplingDelegate` is present,
+ *     prefer Claude Code so users on a Max subscription don't pay twice;
+ *     fall back to the Anthropic API path otherwise.
+ *
+ * Exported for unit tests; production callers go through `loadRuntime`.
+ */
+export function buildProvider(options: LoadRuntimeOptions): JsonOutputProvider {
+  const kind: ProviderKind = options.providerKind ?? "auto";
+
+  if (kind === "claude_code") {
+    if (!options.samplingDelegate) {
+      throw new Error(
+        "loadRuntime: providerKind=claude_code requires a samplingDelegate."
+      );
+    }
+    return new ClaudeCodeJsonOutputProvider({
+      delegate: options.samplingDelegate
+    });
+  }
+
+  if (kind === "anthropic") {
+    return new AnthropicJsonOutputProvider({
+      apiKey: options.anthropicApiKey,
+      defaultModel: options.anthropicModel
+    });
+  }
+
+  // auto: prefer the in-session sampling path when wired, fall back to API.
+  if (options.samplingDelegate) {
+    return new ClaudeCodeJsonOutputProvider({
+      delegate: options.samplingDelegate
+    });
+  }
+  return new AnthropicJsonOutputProvider({
+    apiKey: options.anthropicApiKey,
+    defaultModel: options.anthropicModel
+  });
 }
 
 /**

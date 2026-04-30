@@ -25,6 +25,13 @@ export type BuildServerOptions = {
   name?: string;
   /** Override server version (default: package.json). */
   version?: string;
+  /**
+   * Existing McpServer instance to register tools onto. The bin.ts entry
+   * point passes one in so the sampling delegate (which closes over the
+   * server) and the tool registrations share the same SDK server. When
+   * omitted, a fresh server is constructed (used by tests).
+   */
+  existingServer?: McpServer;
 };
 
 /**
@@ -60,10 +67,12 @@ export function buildServer(options: BuildServerOptions) {
   registry.register(makeBulkEvaluateJobsTool(options.runtime));
   registry.register(makeRunSavedSearchTool(options.runtime));
 
-  const server = new McpServer({
-    name: options.name ?? "networkpipeline",
-    version: options.version ?? "0.1.0"
-  });
+  const server =
+    options.existingServer ??
+    new McpServer({
+      name: options.name ?? "networkpipeline",
+      version: options.version ?? "0.1.0"
+    });
 
   for (const tool of registry.list()) {
     // Best-effort introspection of the input shape. Object schemas are
