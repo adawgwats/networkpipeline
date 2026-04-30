@@ -22,6 +22,25 @@ export type {
   ProviderRunRow
 } from "./provider_runs.js";
 
+export type {
+  Cadence,
+  SavedSearchInsert,
+  SavedSearchRow
+} from "./saved_searches.js";
+
+export type {
+  SearchRunInsert,
+  SearchRunRow,
+  SearchRunStatus
+} from "./search_runs.js";
+
+export type {
+  DiscoveredPostingInsert,
+  DiscoveredPostingRow,
+  DiscoveredPostingStatus,
+  SourceId
+} from "./discovered_postings.js";
+
 /**
  * Idempotent schema-apply DDL. Runs at startup (or in test setup) to
  * ensure every table + index exists. SQLite's "IF NOT EXISTS" makes
@@ -103,5 +122,65 @@ export const APPLY_SCHEMA_DDL = [
     created_via TEXT NOT NULL
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS uniq_candidate_criteria_versions_version ON candidate_criteria_versions(version)`,
-  `CREATE INDEX IF NOT EXISTS idx_candidate_criteria_versions_created_at ON candidate_criteria_versions(created_at)`
+  `CREATE INDEX IF NOT EXISTS idx_candidate_criteria_versions_created_at ON candidate_criteria_versions(created_at)`,
+
+  // saved_searches
+  `CREATE TABLE IF NOT EXISTS saved_searches (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    sources_json TEXT NOT NULL,
+    queries_json TEXT NOT NULL,
+    criteria_overlay_path TEXT,
+    cadence TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_run_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_saved_searches_label ON saved_searches(label)`,
+  `CREATE INDEX IF NOT EXISTS idx_saved_searches_last_run_at ON saved_searches(last_run_at)`,
+
+  // search_runs
+  `CREATE TABLE IF NOT EXISTS search_runs (
+    id TEXT PRIMARY KEY,
+    saved_search_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL,
+    results_found INTEGER NOT NULL DEFAULT 0,
+    results_pre_filtered INTEGER NOT NULL DEFAULT 0,
+    results_evaluated INTEGER NOT NULL DEFAULT 0,
+    results_accepted INTEGER NOT NULL DEFAULT 0,
+    results_below_threshold INTEGER NOT NULL DEFAULT 0,
+    results_rejected INTEGER NOT NULL DEFAULT 0,
+    results_needs_review INTEGER NOT NULL DEFAULT 0,
+    total_cost_usd_cents REAL,
+    error_message TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_search_runs_saved_search_id ON search_runs(saved_search_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_search_runs_started_at ON search_runs(started_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_search_runs_status ON search_runs(status)`,
+
+  // discovered_postings
+  `CREATE TABLE IF NOT EXISTS discovered_postings (
+    id TEXT PRIMARY KEY,
+    saved_search_id TEXT NOT NULL,
+    search_run_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    external_ref TEXT,
+    url TEXT,
+    title TEXT,
+    company TEXT,
+    raw_metadata_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    pre_filter_reason_code TEXT,
+    job_evaluation_id TEXT,
+    discovered_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_discovered_postings_saved_search_id ON discovered_postings(saved_search_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_discovered_postings_search_run_id ON discovered_postings(search_run_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_discovered_postings_status ON discovered_postings(status)`,
+  `CREATE INDEX IF NOT EXISTS idx_discovered_postings_source ON discovered_postings(source)`,
+  `CREATE INDEX IF NOT EXISTS idx_discovered_postings_url ON discovered_postings(url)`,
+  `CREATE INDEX IF NOT EXISTS idx_discovered_postings_external_ref ON discovered_postings(source, external_ref)`
 ] as const;
