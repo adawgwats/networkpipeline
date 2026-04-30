@@ -15,7 +15,7 @@
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "typecheck": "tsc --project tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/__tests__/schema.test.ts src/__tests__/prompt.test.ts src/__tests__/extract.test.ts src/__tests__/gates.test.ts src/__tests__/values.test.ts src/__tests__/score.test.ts src/__tests__/pipeline.test.ts"
+    "test": "node --import tsx --test src/__tests__/schema.test.ts src/__tests__/prompt.test.ts src/__tests__/extract.test.ts src/__tests__/gates.test.ts src/__tests__/pre_extraction.test.ts src/__tests__/values.test.ts src/__tests__/score.test.ts src/__tests__/pipeline.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
