@@ -10,3 +10,12 @@ export {
   ProviderRunsRepository,
   type CacheStats
 } from "./provider_runs.js";
+export { SavedSearchesRepository } from "./saved_searches.js";
+export {
+  SearchRunsRepository,
+  type SearchRunCounters
+} from "./search_runs.js";
+export {
+  DiscoveredPostingsRepository,
+  type UpdateStatusOpts
+} from "./discovered_postings.js";
