@@ -1,0 +1,30 @@
+{
+  "name": "@networkpipeline/discovery",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./connector": "./src/connector/index.ts",
+    "./connectors/indeed": "./src/connectors/indeed.ts",
+    "./connectors/greenhouse": "./src/connectors/greenhouse.ts",
+    "./connectors/lever": "./src/connectors/lever.ts",
+    "./connectors/ashby": "./src/connectors/ashby.ts"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/__tests__/seniority.test.ts src/__tests__/html.test.ts src/__tests__/dedup.test.ts src/__tests__/indeed.test.ts src/__tests__/greenhouse.test.ts src/__tests__/lever.test.ts src/__tests__/ashby.test.ts"
+  },
+  "dependencies": {
+    "@networkpipeline/criteria": "0.1.0",
+    "@networkpipeline/db": "0.1.0",
+    "@networkpipeline/evaluator": "0.1.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.13",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
