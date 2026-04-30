@@ -134,11 +134,11 @@ export class ClaudeCodeJsonOutputProvider implements JsonOutputProvider {
       lastIssues = parsed.error.issues;
 
       if (attempt < maxAttempts - 1) {
-        currentUser = `${request.userPrompt}\n\nYour previous tool call did not match the required schema. Errors:\n${JSON.stringify(
+        currentUser = `${request.userPrompt}\n\nYour previous JSON response did not match the required schema. Validation errors:\n${JSON.stringify(
           parsed.error.issues,
           null,
           2
-        )}\n\nCall the \`${request.toolName}\` tool again with corrected input.`;
+        )}\n\nReply again with a single JSON object that satisfies every constraint. No prose, no markdown fences.`;
       }
     }
 
@@ -179,7 +179,7 @@ export class ClaudeCodeJsonOutputProvider implements JsonOutputProvider {
       // amounts to MCP servers, and the call is billed against the user's
       // Max subscription rather than per-token API spend.
       cost_usd_cents: null,
-      stop_reason: args.stopReason ?? "tool_use",
+      stop_reason: args.stopReason ?? "end_turn",
       retries: args.retries
     };
   }

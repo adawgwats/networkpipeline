@@ -6,14 +6,18 @@ import type { SamplingDelegate } from "@networkpipeline/evaluator";
  * the connected MCP client (Claude Code) via the `sampling/createMessage`
  * primitive.
  *
- * When the user runs Claude Code with NetworkPipeline registered as an
- * MCP server, every evaluator stage (extract, values, score) calls
- * `provider.generateJsonObject(...)` on a `ClaudeCodeJsonOutputProvider`,
- * which in turn calls this delegate, which sends a `sampling/createMessage`
- * request back over the stdio transport. Claude Code performs the
- * inference inside the user's existing Max-subscription session and
- * returns a `tool_use` content block. We then unwrap that block back
- * into `{ data, usage }` for the provider to validate.
+ * IMPORTANT: this delegate uses **plain-text sampling**, not the
+ * tool-use sampling sub-capability. Claude Code (as of v2.1.123)
+ * advertises `sampling/createMessage` but does NOT advertise the
+ * `sampling.tools` capability, so a server that requests tools in its
+ * sampling call gets `Client does not support sampling tools capability`.
+ *
+ * The trade-off: instead of forcing structured output via a tool
+ * `input_schema`, we embed the JSON Schema in the system prompt and
+ * instruct the model to emit a single JSON object. The provider then
+ * validates the parsed JSON with Zod (same retry-on-failure semantics
+ * as the tool-use path). Slightly more brittle to model output drift,
+ * but compatible with every MCP client that implements basic sampling.
  *
  * The McpServer must be connected to a transport before any sampling
  * call is dispatched; the delegate is invoked lazily (per evaluator
@@ -22,51 +26,48 @@ import type { SamplingDelegate } from "@networkpipeline/evaluator";
  */
 export function buildSamplingDelegate(server: McpServer): SamplingDelegate {
   return async (req) => {
-    // Tool schema requires `type: "object"` at the top level. The Zod
-    // → JSON Schema conversion already produces that shape for the
-    // schemas we use; we cast through unknown to the SDK's stricter
-    // shape (which requires properties values typed as `object`) since
-    // our JSON schema property values are themselves objects in
-    // practice and zod-to-json-schema keeps them that way.
-    const inputSchema = req.inputSchema as unknown as {
-      [x: string]: unknown;
-      type: "object";
-      properties?: { [x: string]: object };
-      required?: string[];
-    };
+    // Compose a system prompt that includes the JSON Schema and tells
+    // the model to output ONLY a JSON object matching it. The original
+    // systemPrompt (extract / values / score instructions) stays intact;
+    // we append the schema-output discipline below it.
+    const composedSystem = `${req.systemPrompt}
+
+# Output format
+
+You MUST respond with a single JSON object that conforms to the JSON Schema below. Output ONLY the JSON object — no prose, no markdown code fences, no commentary, no explanations. The first character of your response must be \`{\` and the last must be \`}\`.
+
+JSON Schema for the response object:
+\`\`\`json
+${JSON.stringify(req.inputSchema, null, 2)}
+\`\`\``;
 
     const result = await server.server.createMessage({
-      systemPrompt: req.systemPrompt,
+      systemPrompt: composedSystem,
       maxTokens: req.maxTokens ?? 4096,
       messages: [
         {
           role: "user",
           content: { type: "text", text: req.userPrompt }
         }
-      ],
-      tools: [
-        {
-          name: req.toolName,
-          description: req.toolDescription,
-          inputSchema
-        }
-      ],
-      toolChoice: { mode: "required" }
+      ]
     });
 
-    // Locate the tool_use content block. With tools provided the result
-    // content can be a single block or an array of blocks (parallel
-    // tool calls); we only ever ask for one tool, so take the first
-    // tool_use we find.
-    const block = pickToolUseBlock(result.content, req.toolName);
-    if (!block) {
+    const text = extractText(result.content);
+    if (text === undefined) {
       throw new Error(
-        `sampling/createMessage returned no tool_use block for tool ${req.toolName}.`
+        `sampling/createMessage returned no text content (result.content kind: ${describeContent(result.content)})`
+      );
+    }
+
+    const parsed = parseJsonObject(text);
+    if (parsed === null) {
+      throw new Error(
+        `sampling/createMessage response was not valid JSON. First 500 chars: ${text.slice(0, 500)}`
       );
     }
 
     return {
-      data: block.input as unknown,
+      data: parsed,
       usage: {
         // The MCP sampling result surfaces `model` and `stopReason`,
         // but does NOT expose token counts — Claude Code keeps usage
@@ -79,31 +80,111 @@ export function buildSamplingDelegate(server: McpServer): SamplingDelegate {
   };
 }
 
-type ToolUseBlock = {
-  type: "tool_use";
-  name: string;
-  id: string;
-  input: Record<string, unknown>;
-};
-
 /**
- * Walk the (possibly array, possibly single-block) content of a
- * sampling result and return the first matching tool_use block.
+ * MCP sampling result `content` is either a single block or an array
+ * of blocks (parallel responses). For plain-text sampling we expect a
+ * single text block; we walk both shapes defensively.
  */
-function pickToolUseBlock(
-  content: unknown,
-  toolName: string
-): ToolUseBlock | undefined {
+function extractText(content: unknown): string | undefined {
   const blocks = Array.isArray(content) ? content : [content];
   for (const block of blocks) {
     if (
       block &&
       typeof block === "object" &&
-      (block as { type?: unknown }).type === "tool_use" &&
-      (block as { name?: unknown }).name === toolName
+      (block as { type?: unknown }).type === "text"
     ) {
-      return block as ToolUseBlock;
+      const text = (block as { text?: unknown }).text;
+      if (typeof text === "string") return text;
     }
   }
   return undefined;
+}
+
+function describeContent(content: unknown): string {
+  if (content === null || content === undefined) return "null";
+  if (Array.isArray(content)) {
+    return `array of ${content.length} blocks (${content
+      .map((b) =>
+        b && typeof b === "object" && (b as { type?: unknown }).type
+          ? String((b as { type: unknown }).type)
+          : "unknown"
+      )
+      .join(", ")})`;
+  }
+  if (typeof content === "object") {
+    const t = (content as { type?: unknown }).type;
+    return typeof t === "string" ? `single ${t} block` : "single block (no type)";
+  }
+  return typeof content;
+}
+
+/**
+ * Parse a JSON object from model output, tolerantly. Strips:
+ *  - leading/trailing whitespace
+ *  - one wrapping markdown code fence (```json or ```)
+ * Falls back to extracting the first balanced `{...}` substring if the
+ * model emitted prose around it.
+ *
+ * Returns the parsed value (object or array) on success, `null` on
+ * unrecoverable parse failure.
+ */
+function parseJsonObject(text: string): unknown {
+  let cleaned = text.trim();
+
+  // Strip ```json ... ``` or ``` ... ``` fences.
+  const fenced = cleaned.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  if (fenced) cleaned = fenced[1].trim();
+
+  // Direct parse first.
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Fallback: hunt for the first `{` and slice through its matching `}`.
+    const start = cleaned.indexOf("{");
+    if (start === -1) return null;
+    const candidate = sliceBalanced(cleaned, start);
+    if (candidate === null) return null;
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * Walk forward from `start` (which must be `{` or `[`) and return the
+ * substring through the matching closing brace, accounting for string
+ * literals so braces inside strings don't unbalance the count.
+ */
+function sliceBalanced(text: string, start: number): string | null {
+  const open = text.charAt(start);
+  const close = open === "{" ? "}" : open === "[" ? "]" : null;
+  if (close === null) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text.charAt(i);
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\" && inString) {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === open) depth++;
+    else if (ch === close) {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
 }

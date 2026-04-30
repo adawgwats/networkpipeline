@@ -104,7 +104,7 @@ describe("ClaudeCodeJsonOutputProvider", () => {
     assert.equal(result.run.cache_creation_tokens, 0);
     assert.equal(result.run.cache_read_tokens, 0);
     assert.equal(result.run.cost_usd_cents, null);
-    assert.equal(result.run.stop_reason, "tool_use");
+    assert.equal(result.run.stop_reason, "end_turn");
     assert.equal(result.run.retries, 0);
   });
 
@@ -141,7 +141,9 @@ describe("ClaudeCodeJsonOutputProvider", () => {
     // Second attempt sees the original plus error feedback.
     assert.ok(seenUserPrompts[1]?.startsWith("user message body"));
     assert.ok(seenUserPrompts[1]?.includes("did not match the required schema"));
-    assert.ok(seenUserPrompts[1]?.includes("submit_thing"));
+    // The retry prompt instructs the model to reply with corrected JSON
+    // (no longer references a tool name now that we use plain-text sampling).
+    assert.ok(seenUserPrompts[1]?.includes("single JSON object"));
   });
 
   it("throws ProviderValidationError after exhausting retries on persistent invalid output", async () => {
