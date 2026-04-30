@@ -49,6 +49,27 @@ export {
 
 export {
   loadCriteriaFromFile,
+  loadResolvedCriteriaFromFile,
   parseCriteriaFromYaml,
   resolveCriteriaPath
 } from "./load.js";
+
+export {
+  applyOverlay,
+  CriteriaCycleError,
+  CriteriaDepthExceededError,
+  MAX_EXTENDS_DEPTH,
+  mergeCriteriaShallow,
+  resolveAndApplyOverlays,
+  resolveAndMergeExtends
+} from "./merge.js";
+
+export {
+  overlayFragmentSchema,
+  type OverlayFragment
+} from "./overlay-schema.js";
+
+export {
+  resolveReferencePath,
+  type ReferenceKind
+} from "./resolve.js";

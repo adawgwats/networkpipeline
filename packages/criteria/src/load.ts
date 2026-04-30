@@ -51,3 +51,33 @@ export async function loadCriteriaFromFile(
   const criteria = parseCriteriaFromYaml(yamlText);
   return { path, criteria, yamlText };
 }
+
+/**
+ * Load criteria + resolve `extends` chain + apply `overlays` in one
+ * step. Equivalent to:
+ *
+ *   const { criteria, path } = await loadCriteriaFromFile(p);
+ *   const extended = await resolveAndMergeExtends(criteria, path);
+ *   const resolved = await resolveAndApplyOverlays(extended, path);
+ *
+ * Use this when you want the FULLY RESOLVED criteria the filter
+ * pipeline should evaluate against. Use loadCriteriaFromFile when you
+ * want the verbatim local file (e.g., to mirror to the DB without
+ * collapsing the overlay chain into the persisted snapshot).
+ */
+export async function loadResolvedCriteriaFromFile(
+  overridePath?: string
+): Promise<{
+  path: string;
+  criteria: CandidateCriteria;
+  yamlText: string;
+  resolved: CandidateCriteria;
+}> {
+  const { path, criteria, yamlText } = await loadCriteriaFromFile(overridePath);
+  const { resolveAndMergeExtends, resolveAndApplyOverlays } = await import(
+    "./merge.js"
+  );
+  const extended = await resolveAndMergeExtends(criteria, path);
+  const resolved = await resolveAndApplyOverlays(extended, path);
+  return { path, criteria, yamlText, resolved };
+}
