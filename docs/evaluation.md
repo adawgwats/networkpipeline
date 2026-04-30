@@ -69,7 +69,18 @@ Never required for V1 correctness; supplements Layers 1 and 2.
 | `filter_recall` | Of user-accepted jobs, fraction filter also PASSed | Layer 3 thumbs |
 | `values_violation_detection_rate` | Recall on synthetic values-violation test cases | Layer 2 |
 
-### 3.2 Intro Path Engine
+### 3.2 Discovery
+
+| Metric | Definition | Primary data source |
+|---|---|---|
+| `discovery_recall` | Of postings the user accepted, fraction the connectors discovered (vs user-paste path) | Layer 3 + Layer 1 simulated corpus |
+| `discovery_precision` | Of postings discovered, fraction that passed the criteria filter | search_runs aggregate |
+| `time_to_first_accepted` | Wall clock from `run_saved_search` trigger to first accepted result returned | search_runs |
+| `cost_per_search_run` | Sum of `cost_usd_cents` across all `provider_runs` in a search run | search_runs + provider_runs |
+| `pre_extraction_rejection_rate` | Fraction of `discovered_postings` rejected at the pre-extraction gate (cost-savings metric for the bipartite split, `docs/criteria.md` §6.5) | discovered_postings.pre_filter_status |
+| `dedup_hit_rate` | Fraction of `discovered_postings` whose `input_hash` matched an existing `job_evaluations` row | discovered_postings + job_evaluations |
+
+### 3.3 Intro Path Engine
 
 | Metric | Definition | Primary data source |
 |---|---|---|
@@ -80,7 +91,7 @@ Never required for V1 correctness; supplements Layers 1 and 2.
 | `committed_to_intro_made_rate` | Of committed bridges, fraction actually introduced | Layer 3 |
 | `intro_made_to_conversation_rate` | Of intros made, fraction led to target conversation | Layer 3 |
 
-### 3.3 Outreach Drafts
+### 3.4 Outreach Drafts
 
 | Metric | Definition | Primary data source |
 |---|---|---|
@@ -91,7 +102,7 @@ Never required for V1 correctness; supplements Layers 1 and 2.
 | `bridge_reply_rate` | Of sent bridge-asks, fraction replied | Layer 3 |
 | `edit_distance_to_approved` | Mean Levenshtein between draft and user-approved final | Layer 3 |
 
-### 3.4 Cost And Operations
+### 3.5 Cost And Operations
 
 | Metric | Definition | Primary data source |
 |---|---|---|
@@ -112,6 +123,7 @@ Usage:
 - Deterministic sampling script: `scripts/build-eval-fixtures.ts --seed=42 --n=2000`
 - Drives: `gate_determinism`, `extraction_agreement`, `gate_latency_p95`
 - Full-scale runs (10k, 50k) available via `npm run eval:bulk --dataset=xanderios-linkedin --n=N`
+- **Repurposable as a simulated discovery corpus.** The same fixture set, replayed through a `manual_paste`-style connector that emits one `NormalizedDiscoveredPosting` per row, exercises the full discovery → pre-extraction → dedup → evaluate path against a known fixed set. This is how `discovery_recall`, `discovery_precision`, `pre_extraction_rejection_rate`, and `dedup_hit_rate` (`§3.2`) get a deterministic ground truth before Layer 3 dogfood data exists. The fixture's known rejection labels (from extractor-v1 frozen verdicts) become the "would-have-accepted" set for recall.
 
 `cnamuangtoun/resume-job-description-fit` (HuggingFace) — resume-JD fit-labeled pairs.
 
@@ -368,16 +380,23 @@ V1 dogfood: maintainer's own usage, committed as `docs/evaluation/snapshots/{dat
 
 Target ablation table for the V1 snapshot. Run via `npm run eval:ablation --config=<name>`.
 
-| Configuration | gate_determinism | extraction_agreement | soft_correlation | voice_distance | bfs_correctness | cost_per_eval |
-|---|---|---|---|---|---|---|
-| `full` | — | — | — | — | — | — |
-| `no-calibration` | — | — | — | n/a | n/a | — |
-| `no-values-refusals` | — | — | n/a | n/a | n/a | — |
-| `gates-only` | — | n/a | n/a | n/a | n/a | — |
-| `no-warmth` | n/a | n/a | n/a | n/a | — | n/a |
-| `no-edge-inference` | n/a | n/a | n/a | n/a | — | n/a |
-| `no-enron-guardrails` | n/a | n/a | n/a | — | n/a | n/a |
-| `cache-off` | — | — | — | — | n/a | — |
+| Configuration | gate_determinism | extraction_agreement | soft_correlation | voice_distance | bfs_correctness | cost_per_eval | cost_per_search_run |
+|---|---|---|---|---|---|---|---|
+| `full` | — | — | — | — | — | — | — |
+| `no-calibration` | — | — | — | n/a | n/a | — | — |
+| `no-values-refusals` | — | — | n/a | n/a | n/a | — | — |
+| `gates-only` | — | n/a | n/a | n/a | n/a | — | — |
+| `no-warmth` | n/a | n/a | n/a | n/a | — | n/a | n/a |
+| `no-edge-inference` | n/a | n/a | n/a | n/a | — | n/a | n/a |
+| `no-enron-guardrails` | n/a | n/a | n/a | — | n/a | n/a | n/a |
+| `cache-off` | — | — | — | — | n/a | — | — |
+| `no-pre-extraction-gates` | — | — | n/a | n/a | n/a | — | — |
+| `no-dedup` | n/a | n/a | n/a | n/a | n/a | — | — |
+
+The two new rows isolate the discovery cost-engineering moves (`docs/discovery.md` §5 and §6):
+
+- `no-pre-extraction-gates` — runs every discovered posting through the full `evaluate_job` pipeline with no metadata-only short-circuit. Quantifies the cost contribution of the bipartite gate split (`docs/criteria.md` §6.5).
+- `no-dedup` — disables both within-run `input_hash` collapsing and cross-run dedup against existing `job_evaluations`. Quantifies how often source aggregation produces duplicate evaluation cost.
 
 This table, populated in `docs/evaluation/snapshots/` over time, is the headline artifact for external readers.
 
@@ -421,6 +440,9 @@ Reserved but deferred:
 - Avocado corpus integration for second voice register
 - Automated longitudinal tracking: snapshots generated on a schedule
 - User-segment analysis: do metrics differ across criteria template profiles?
+- **Multi-source coverage analysis** — which sources surface roles other sources miss? Per-source contribution to `discovery_recall`. Drives prioritization of new connectors and identifies redundant sources.
+- **Real-time scheduling** — cron / push notifications for `run_saved_search`. V1 is user-triggered (`docs/discovery.md` §12). Adds metrics: schedule-adherence, freshness lag, cost-per-day under steady-state cadence.
+- **Private board APIs requiring user-supplied auth** — Greenhouse-private-board, Lever auth API, internal Ashby views. New connector variants with credential-handling. Eval needs auth-failure recovery cases and per-tenant cost attribution.
 
 ## 11. Licensing And Privacy
 
@@ -440,5 +462,6 @@ Reserved but deferred:
 ## 12. Related Docs
 
 - [Criteria System](./criteria.md)
+- [Discovery Layer](./discovery.md)
 - [Intro Path Engine](./intro-paths.md)
 - [Architecture](./architecture.md)

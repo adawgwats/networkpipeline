@@ -1,13 +1,14 @@
 # System and Flow Diagrams
 
-This doc collects mermaid diagrams for NetworkPipeline at four levels of zoom:
+This doc collects mermaid diagrams for NetworkPipeline at multiple levels of zoom:
 
 1. [System topology](#1-system-topology) — who runs where, what depends on what
-2. [Evaluation flow](#2-evaluation-flow) — one posting through the filter pipeline
+2. [Evaluation flow](#2-evaluation-flow) — discovery preamble + one posting through the filter pipeline
 3. [Intro-path flow](#3-intro-path-flow) — target role → ranked warm paths → drafted outreach
-4. [Full lifecycle](#4-full-lifecycle) — filter → intro → outreach → reply detection
+4. [Full lifecycle](#4-full-lifecycle) — discover → filter → intro → outreach → reply detection
 5. [Provider cache lifecycle](#5-provider-cache-lifecycle) — how the Anthropic prompt cache amortizes
 6. [Data model overview](#6-data-model-overview) — canonical / staging / trace separation
+7. [Discovery sequence](#7-discovery-sequence) — connector-callback round-trip per source
 
 Each diagram annotates with issue numbers (`#N`) for unbuilt pieces and `✓` for the parts already on `main`.
 
@@ -21,13 +22,17 @@ graph TB
 
     subgraph CC["Claude Code (single LLM driver)"]
         CCBuiltin["Anthropic-hosted MCP tools<br/>Gmail · Calendar · Indeed<br/>Scholar Gateway · WebFetch"]
-        CCCustom["NetworkPipeline MCP tools<br/>evaluate_job · find_intro_paths<br/>draft_bridge_message · approve_*<br/>record_gmail_interactions"]
+        CCCustom["NetworkPipeline MCP tools<br/>run_saved_search · evaluate_job<br/>discover_jobs · record_*<br/>find_intro_paths · draft_*"]
     end
 
     subgraph External["External services"]
         Gmail[Gmail API]
         Cal[Google Calendar]
         Indeed[Indeed]
+        GH[Greenhouse boards-api]
+        Lever[Lever postings API]
+        Ashby[Ashby posting-api]
+        CPSites[Company career pages]
         Scholar[Semantic Scholar]
         Web[Public web]
     end
@@ -35,16 +40,27 @@ graph TB
     subgraph NP["NetworkPipeline MCP server #22"]
         Registry["Tool registry<br/>Zod-validated"]
 
+        subgraph Connectors["Source Connectors (discovery #NN)"]
+            ConIndeed["indeed<br/>via Claude Indeed MCP"]
+            ConGH["greenhouse<br/>HTTP boards-api"]
+            ConLever["lever<br/>HTTP postings API"]
+            ConAshby["ashby<br/>HTTP posting-api"]
+            ConCP["career_page<br/>WebFetch + extractor"]
+            ConRecr["recruiter_email<br/>via Claude Gmail MCP"]
+            ConPaste["manual_paste<br/>shim for V0 path"]
+        end
+
         subgraph Pkgs["Domain packages"]
             CriteriaPkg["@networkpipeline/criteria ✓<br/>YAML schema · validator<br/>extends/overlays #7<br/>versioning #8"]
-            EvaluatorPkg["@networkpipeline/evaluator ✓<br/>extract ✓ #9<br/>gates ✓ #10<br/>values_check #11<br/>soft_score #12<br/>provider {anthropic, mock}"]
+            DiscoveryPkg["@networkpipeline/discovery #NN<br/>connectors · dedup<br/>pre-extraction gates<br/>SavedSearch · SearchRun"]
+            EvaluatorPkg["@networkpipeline/evaluator ✓<br/>extract ✓ #9<br/>gates ✓ #10 (bipartite split #NN)<br/>values_check #11 · soft_score #12<br/>provider {anthropic, mock}"]
             GraphPkg["@networkpipeline/graph<br/>#15 #17 #18"]
-            IngestPkg["@networkpipeline/ingest<br/>#14 #16"]
+            IngestPkg["@networkpipeline/ingest<br/>#14 #16<br/>(graph-side: Gmail/Cal interactions)"]
             OutreachPkg["@networkpipeline/outreach<br/>#19 #20 #21"]
         end
 
         subgraph Storage["Local-first storage"]
-            DB[("SQLite #3<br/>canonical · staging · traces")]
+            DB[("SQLite #3<br/>canonical · staging · traces<br/>+ saved_searches · search_runs<br/>+ discovered_postings")]
             FS[("Local filesystem<br/>criteria.yaml · artifacts/<br/>db.sqlite")]
         end
     end
@@ -60,14 +76,34 @@ graph TB
 
     CCCustom -->|stdio default<br/>HTTP for review UI| Registry
     Registry --> CriteriaPkg
+    Registry --> DiscoveryPkg
     Registry --> EvaluatorPkg
     Registry --> GraphPkg
     Registry --> IngestPkg
     Registry --> OutreachPkg
 
+    DiscoveryPkg --> ConIndeed
+    DiscoveryPkg --> ConGH
+    DiscoveryPkg --> ConLever
+    DiscoveryPkg --> ConAshby
+    DiscoveryPkg --> ConCP
+    DiscoveryPkg --> ConRecr
+    DiscoveryPkg --> ConPaste
+
+    ConIndeed -.->|IngestInstruction<br/>routed via Claude| CCBuiltin
+    ConRecr -.->|IngestInstruction<br/>routed via Claude| CCBuiltin
+    ConCP -.->|WebFetch via Claude| CCBuiltin
+    ConGH --> GH
+    ConLever --> Lever
+    ConAshby --> Ashby
+    ConCP --> CPSites
+    CCBuiltin -.-> Indeed
+    CCBuiltin -.-> Gmail
+
     EvaluatorPkg -->|provider/anthropic<br/>direct API call| CCBuiltin
     CriteriaPkg --> DB
     CriteriaPkg --> FS
+    DiscoveryPkg --> DB
     EvaluatorPkg --> DB
     GraphPkg --> DB
     IngestPkg --> DB
@@ -79,8 +115,8 @@ graph TB
     classDef pending fill:#7a5b1f,stroke:#3d2d0a,color:#fff
     classDef external fill:#1f4e7a,stroke:#0a253d,color:#fff
     class CriteriaPkg,EvaluatorPkg built
-    class GraphPkg,IngestPkg,OutreachPkg,Registry,DB,WebUI pending
-    class Gmail,Cal,Indeed,Scholar,Web external
+    class GraphPkg,IngestPkg,OutreachPkg,Registry,DB,WebUI,DiscoveryPkg,ConIndeed,ConGH,ConLever,ConAshby,ConCP,ConRecr,ConPaste pending
+    class Gmail,Cal,Indeed,Scholar,Web,GH,Lever,Ashby,CPSites external
 ```
 
 ### Key boundaries
@@ -91,11 +127,37 @@ graph TB
 
 ## 2. Evaluation flow
 
-What happens when a user runs `evaluate_job` on one posting. Files in italics show where each step lives in the repo.
+What happens to one posting through the filter pipeline. The diagram below is unchanged from V0; it describes the *back half* of the full flow. The discovery preamble (`docs/discovery.md` §8) prepends to this:
 
 ```mermaid
 flowchart TD
-    Start([User pastes posting URL or text]) --> Claude["Claude Code calls<br/>evaluate_job(text)"]
+    UStart([User: "Run my morning searches"]) --> RSS["Claude calls<br/>run_saved_search(saved_search_id)"]
+    RSS --> Disc["NetworkPipeline returns<br/>IngestInstruction (per-source work_items)"]
+    Disc --> Fan["Claude fans out:<br/>Indeed MCP · Gmail MCP · WebFetch ·<br/>HTTP to Greenhouse/Lever/Ashby"]
+    Fan --> Cb["Claude callback:<br/>record_discovered_postings(saved_search_id, postings[])"]
+    Cb --> Norm["NetworkPipeline normalizes per connector<br/>(NormalizedDiscoveredPosting)"]
+    Norm --> Pre["Pre-extraction gates (§5.1 of discovery.md)<br/>company · phrases · location · employment_type<br/>+ partial role_seniority via title regex"]
+    Pre --> Dedup["Dedup by input_hash<br/>(within run + cross-run)"]
+    Dedup --> SurvA{Survivor?}
+    SurvA -->|rejected at pre-filter| WriteDP[("DiscoveredPosting<br/>pre_filter_status=rejected<br/>+ reason_code")]
+    SurvA -->|dedup_existing| LinkPrior[("DiscoveredPosting<br/>pre_filter_status=dedup_existing<br/>links to prior job_evaluation_id")]
+    SurvA -->|passed_for_eval| Survivors([Survivors → bulk_evaluate_jobs])
+    Survivors --> EvalEnter
+
+    classDef pending fill:#7a5b1f,stroke:#3d2d0a,color:#fff
+    classDef reject fill:#7a1f1f,stroke:#3d0a0a,color:#fff
+    classDef accept fill:#1f7a4e,stroke:#0a3d25,color:#fff
+    class RSS,Disc,Fan,Cb,Norm,Pre,Dedup pending
+    class WriteDP,LinkPrior reject
+    class Survivors accept
+```
+
+The single-paste flow (V0) skips the discovery preamble — Claude calls `evaluate_job(text)` directly, which is `EvalEnter` below. Either way, the same filter pipeline runs:
+
+```mermaid
+flowchart TD
+    EvalEnter([survivor or single-paste]) --> Claude["Claude Code calls<br/>evaluate_job(text)"]
+    Start([User pastes posting URL or text]) --> Claude
     Claude --> Extract["extractJobFacts<br/>packages/evaluator/src/extract/extract.ts"]
 
     Extract --> EmptyCheck{Empty<br/>text?}
@@ -252,12 +314,24 @@ The end-to-end loop a user runs across days or weeks: criteria refinement, evalu
 stateDiagram-v2
     [*] --> Onboarding
 
-    Onboarding --> Filtering: criteria.yaml v1 saved
+    Onboarding --> Discovering: criteria.yaml v1 saved
     note right of Onboarding
         criteria-init #8
         Conversational interview
         produces first criteria.yaml
     end note
+
+    state Discovering {
+        [*] --> Idle
+        Idle --> Searching: run_saved_search /<br/>"Run my morning searches"
+        Searching --> PreFiltering: connector callbacks land
+        PreFiltering --> QueueingForFilter: survivors with<br/>pre_filter_status=passed_for_eval
+        PreFiltering --> ReturningDigest: nothing survived /<br/>only dedup_existing
+        QueueingForFilter --> ReturningDigest: bulk_evaluate_jobs done
+        ReturningDigest --> Idle: digest delivered
+    }
+
+    Discovering --> Filtering: any survivor reaches evaluator
 
     state Filtering {
         [*] --> Evaluate
@@ -331,7 +405,7 @@ stateDiagram-v2
         WillingnessExhausted --> Closed
     }
 
-    Outcome --> Filtering: log_outcome feeds back
+    Outcome --> Discovering: log_outcome feeds back<br/>(criteria refinement → next search)
     note right of Outcome
         Outcomes update:
         - bridge_willingness_estimate
@@ -398,10 +472,15 @@ erDiagram
     CANDIDATE_PROFILES ||--o{ APPLICATION_ASSETS : owns
 
     CANDIDATE_CRITERIA_VERSIONS ||--o{ JOB_EVALUATIONS : "scoped_by"
+    CANDIDATE_CRITERIA_VERSIONS ||--o{ SEARCH_RUNS : "scoped_by"
 
     JOB_EVALUATIONS }o--|| CRITERIA_FILE : "validated_against"
     JOB_EVALUATIONS ||--o{ PROVIDER_RUNS : "trace"
     JOB_EVALUATIONS ||--o{ MCP_INVOCATIONS : "originated_from"
+
+    SAVED_SEARCHES ||--o{ SEARCH_RUNS : "executed_as"
+    SEARCH_RUNS ||--o{ DISCOVERED_POSTINGS : "produces"
+    DISCOVERED_POSTINGS }o--o| JOB_EVALUATIONS : "links_to_when_evaluated"
 
     PEOPLE ||--o{ PERSON_ATTRIBUTES : has
     PEOPLE ||--o{ PERSON_INTERACTIONS : "interacted_with_user"
@@ -524,6 +603,42 @@ erDiagram
         float confidence
         string status
     }
+
+    SAVED_SEARCHES {
+        ulid id PK
+        string label
+        json sources
+        string criteria_overlay_path
+        string cadence
+        bool is_active
+    }
+
+    SEARCH_RUNS {
+        ulid id PK
+        ulid saved_search_id FK
+        ulid criteria_version_id FK
+        string status
+        int n_discovered
+        int n_pre_filter_rejected
+        int n_dedup_existing
+        int n_evaluated
+        int n_accepted
+        float cost_usd_cents
+    }
+
+    DISCOVERED_POSTINGS {
+        ulid id PK
+        ulid search_run_id FK
+        string source_id
+        string source_external_id
+        string url_canonical
+        string input_hash
+        string pre_filter_status
+        string pre_filter_reason_code
+        ulid job_evaluation_id FK
+        json dedup_aliases
+        json raw_metadata
+    }
 ```
 
 ### Three-layer separation
@@ -533,6 +648,80 @@ erDiagram
 - **Trace** (provider_runs, mcp_invocations, candidate_criteria_versions, job_evaluations, outcome_labels) — observability and reproducibility data. The eval harness reads from here to compute precision/recall and ablation tables.
 
 The rule: AI extractions land in staging, get reviewed, then flow to canonical. Trace tables are append-only and never gate behavior.
+
+## 7. Discovery sequence
+
+The full connector-callback round-trip from `run_saved_search` through digest delivery. Shows the per-source fan-out parallelism and the bipartite gate split (pre-extraction inside NetworkPipeline before `bulk_evaluate_jobs` fires).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant CC as Claude Code
+    participant NP as NetworkPipeline MCP
+    participant Indeed as Indeed MCP
+    participant GH as Greenhouse HTTP
+    participant Lever as Lever HTTP
+    participant Ashby as Ashby HTTP
+    participant CP as Career page (WebFetch)
+    participant Gmail as Gmail MCP
+    participant DB as SQLite
+
+    U->>CC: "Run my morning searches"
+    CC->>NP: run_saved_search(saved_search_id)
+    NP->>DB: insert SearchRun(status=running,<br/>criteria_version_id)
+    NP-->>CC: IngestInstruction<br/>{ work_items: per-source }
+
+    par Indeed
+        CC->>Indeed: search_jobs(q, l, fromage_days)
+        Indeed-->>CC: [job_keys]
+        CC->>Indeed: get_job_details(selected)
+        Indeed-->>CC: postings
+    and Greenhouse boards (per slug, ≤4 conc)
+        CC->>GH: GET /boards-api/.../jobs?content=true
+        GH-->>CC: postings[]
+    and Lever boards
+        CC->>Lever: GET /v0/postings/{slug}?mode=json
+        Lever-->>CC: postings[]
+    and Ashby boards
+        CC->>Ashby: GET /posting-api/job-board/{slug}
+        Ashby-->>CC: postings[]
+    and Career page
+        CC->>CP: WebFetch(careers_url, extract_schema)
+        CP-->>CC: extracted postings[]
+    and Recruiter email
+        CC->>Gmail: search_threads + get_thread<br/>label:networkpipeline/inbound/recruiter
+        Gmail-->>CC: threads with embedded postings
+    end
+
+    CC->>NP: record_discovered_postings(saved_search_id, postings[])
+
+    Note over NP: Normalize per connector<br/>NormalizedDiscoveredPosting
+
+    NP->>NP: Pre-extraction gates (§5.1 of discovery.md)
+    NP->>NP: Dedup by input_hash<br/>(within run + cross-run vs job_evaluations)
+    NP->>DB: insert DiscoveredPosting rows<br/>(rejected · dedup_existing · passed_for_eval)
+
+    NP-->>CC: SearchRunResult{<br/>survivors_for_eval,<br/>rejected_summary{by_reason_code},<br/>dedup_collapsed_count<br/>}
+
+    CC->>NP: bulk_evaluate_jobs(survivors_for_eval)
+
+    Note over NP: For each survivor:<br/>extract → post-extraction gates →<br/>values_check → soft_score<br/>(unchanged from §2)
+
+    NP->>DB: insert JobEvaluation per survivor<br/>link to DiscoveredPosting
+    NP->>DB: update SearchRun(status=completed,<br/>n_*, cost_usd_cents)
+
+    NP-->>CC: digest {<br/>accepted: [...], near_threshold: [...],<br/>rejected: [...],<br/>cost_summary, time_to_first_accepted<br/>}
+    CC-->>U: morning digest
+```
+
+### Why fan-out, not pipeline
+
+Each source's wall-clock latency is dominated by network round-trips (1–10 s per board API; 30+ s for Indeed's two-phase fetch). Pipelining across sources would block on the slowest. Parallel fan-out drops `time_to_first_accepted` (`docs/evaluation.md` §3) closer to the slowest *single* connector instead of the *sum*.
+
+### Why pre-extraction inside NetworkPipeline, not Claude
+
+The pre-extraction gate decisions are deterministic, cheap, and benefit from direct DB access (cross-run dedup against `job_evaluations`). Doing this in Claude would add a second round-trip for no gain. Claude's role is fan-out and credentialed source access; NetworkPipeline's role is normalization, filtering, and persistence.
 
 ## Where to look in code
 
@@ -545,10 +734,22 @@ The rule: AI extractions land in staging, get reviewed, then flow to canonical. 
 | Criteria YAML schema | [packages/criteria/src/schema.ts](../packages/criteria/src/schema.ts) |
 | Criteria load + path resolution | [packages/criteria/src/load.ts](../packages/criteria/src/load.ts) |
 | Provider abstraction | [packages/evaluator/src/provider/types.ts](../packages/evaluator/src/provider/types.ts) |
+| `SourceConnector` interface (#NN) | `packages/discovery/src/connectors/types.ts` |
+| Indeed connector (#NN) | `packages/discovery/src/connectors/indeed.ts` |
+| Greenhouse connector (#NN) | `packages/discovery/src/connectors/greenhouse.ts` |
+| Lever connector (#NN) | `packages/discovery/src/connectors/lever.ts` |
+| Ashby connector (#NN) | `packages/discovery/src/connectors/ashby.ts` |
+| Career-page connector (#NN) | `packages/discovery/src/connectors/career_page.ts` |
+| Recruiter-email connector (#NN) | `packages/discovery/src/connectors/recruiter_email.ts` |
+| Manual-paste shim (#NN) | `packages/discovery/src/connectors/manual_paste.ts` |
+| Pre-extraction gate dispatch (#NN) | `packages/discovery/src/pre_extraction_gates.ts` |
+| Dedup helpers (#NN) | `packages/discovery/src/dedup.ts` |
+| Saved-search lifecycle (#NN) | `packages/discovery/src/saved_search.ts` |
 
 ## Related docs
 
 - [Architecture](./architecture.md) — narrative version of these diagrams
-- [Criteria System](./criteria.md) — the YAML schema and gate semantics
+- [Criteria System](./criteria.md) — the YAML schema and gate semantics; §6.5 documents the bipartite gate split
+- [Discovery Layer](./discovery.md) — source connectors, dedup, saved searches
 - [Intro Path Engine](./intro-paths.md) — ranking math and outreach contracts
 - [Evaluation Harness](./evaluation.md) — how every flow above gets measured
