@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { htmlToText } from "../connector/html.js";
+import { inferRoleKindsFromTitle } from "../connector/role_kind.js";
 import { inferSeniorityFromTitle } from "../connector/seniority.js";
-import type {
-  IngestInstruction,
-  InstructionSourceConnector,
-  NormalizedDiscoveredPosting,
-  SourceQuery
+import {
+  DEFAULT_MAX_RESULTS,
+  type IngestInstruction,
+  type InstructionSourceConnector,
+  type NormalizedDiscoveredPosting,
+  type SourceQuery
 } from "../connector/types.js";
 
 /**
@@ -66,13 +68,17 @@ export function careerPageConnector(
     },
     discoverInstruction(
       query: SourceQuery,
-      runId: string
+      runId: string,
+      _maxResults?: number
     ): IngestInstruction {
       if (query.source !== "career_page") {
         throw new Error(
           `careerPageConnector: expected query.source === "career_page", got "${query.source}"`
         );
       }
+      // The career-page connector has no upstream "limit" knob — Claude
+      // crawls whatever the URL exposes. Truncation happens in
+      // recordResults below.
       return {
         kind: "ingest_instruction",
         source: "career_page",
@@ -86,12 +92,15 @@ export function careerPageConnector(
         search_run_id: runId
       };
     },
-    recordResults(payload: unknown): NormalizedDiscoveredPosting[] {
+    recordResults(
+      payload: unknown,
+      maxResults: number = DEFAULT_MAX_RESULTS
+    ): NormalizedDiscoveredPosting[] {
       const parsed = careerPagePayloadSchema.safeParse(payload);
       if (!parsed.success) return [];
-      return parsed.data.postings.map((p) =>
-        normalizeCareerPagePosting(p, opts.defaultCompany)
-      );
+      return parsed.data.postings
+        .slice(0, maxResults)
+        .map((p) => normalizeCareerPagePosting(p, opts.defaultCompany));
     }
   };
 }
@@ -126,6 +135,7 @@ function normalizeCareerPagePosting(
     is_onsite_required: isOnsiteRequired,
     employment_type: mapEmploymentTypeHint(posting.employment_type_hint ?? null),
     inferred_seniority_signals: inferSeniorityFromTitle(posting.title),
+    inferred_role_kinds: inferRoleKindsFromTitle(posting.title),
     raw_metadata: { ...posting }
   };
 }

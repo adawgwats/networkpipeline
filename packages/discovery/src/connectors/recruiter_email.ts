@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { htmlToText } from "../connector/html.js";
+import { inferRoleKindsFromTitle } from "../connector/role_kind.js";
 import { inferSeniorityFromTitle } from "../connector/seniority.js";
-import type {
-  IngestInstruction,
-  InstructionSourceConnector,
-  NormalizedDiscoveredPosting,
-  SourceQuery
+import {
+  DEFAULT_MAX_RESULTS,
+  type IngestInstruction,
+  type InstructionSourceConnector,
+  type NormalizedDiscoveredPosting,
+  type SourceQuery
 } from "../connector/types.js";
 
 /**
@@ -89,7 +91,8 @@ export function recruiterEmailConnector(
     },
     discoverInstruction(
       query: SourceQuery,
-      runId: string
+      runId: string,
+      maxResults?: number
     ): IngestInstruction {
       if (query.source !== "recruiter_email") {
         throw new Error(
@@ -97,6 +100,8 @@ export function recruiterEmailConnector(
         );
       }
       const gmailQuery = query.gmail_query?.trim() || DEFAULT_RECRUITER_QUERY;
+      // Per-call cap takes precedence over the factory default.
+      const effectiveMaxThreads = maxResults ?? maxThreads;
       return {
         kind: "ingest_instruction",
         source: "recruiter_email",
@@ -106,7 +111,7 @@ export function recruiterEmailConnector(
             tool: "mcp__claude_ai_Gmail__search_threads",
             args: {
               query: gmailQuery,
-              max_threads: maxThreads
+              max_threads: effectiveMaxThreads
             }
           }
         ],
@@ -114,7 +119,10 @@ export function recruiterEmailConnector(
         search_run_id: runId
       };
     },
-    recordResults(payload: unknown): NormalizedDiscoveredPosting[] {
+    recordResults(
+      payload: unknown,
+      maxResults: number = DEFAULT_MAX_RESULTS
+    ): NormalizedDiscoveredPosting[] {
       const parsed = recruiterEmailPayloadSchema.safeParse(payload);
       if (!parsed.success) return [];
       const out: NormalizedDiscoveredPosting[] = [];
@@ -126,6 +134,7 @@ export function recruiterEmailConnector(
         if (!thread.posting.title || thread.posting.title.trim().length === 0)
           continue;
         out.push(normalizeRecruiterEmailPosting(thread));
+        if (out.length >= maxResults) break;
       }
       return out;
     }
@@ -165,6 +174,7 @@ function normalizeRecruiterEmailPosting(
     is_onsite_required: isOnsiteRequired,
     employment_type: mapEmploymentTypeHint(posting.employment_type_hint ?? null),
     inferred_seniority_signals: inferSeniorityFromTitle(posting.title),
+    inferred_role_kinds: inferRoleKindsFromTitle(posting.title),
     raw_metadata: { ...thread }
   };
 }

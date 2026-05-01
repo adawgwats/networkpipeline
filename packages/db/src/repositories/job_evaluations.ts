@@ -42,6 +42,11 @@ SELECT * FROM job_evaluations
 WHERE input_hash = ? AND extractor_version = ? AND criteria_version_id = ?
 ORDER BY created_at DESC LIMIT 1
 `;
+const FIND_BY_INPUT_HASH_SQL = `
+SELECT * FROM job_evaluations
+WHERE input_hash = ? AND extractor_version = ?
+ORDER BY created_at DESC LIMIT 1
+`;
 
 export class JobEvaluationsRepository {
   private readonly insertStmt: ReturnType<AppDatabase["prepare"]>;
@@ -51,6 +56,7 @@ export class JobEvaluationsRepository {
   private readonly countByVerdictStmt: ReturnType<AppDatabase["prepare"]>;
   private readonly dedupNullStmt: ReturnType<AppDatabase["prepare"]>;
   private readonly dedupWithStmt: ReturnType<AppDatabase["prepare"]>;
+  private readonly findByInputHashStmt: ReturnType<AppDatabase["prepare"]>;
 
   constructor(private readonly db: AppDatabase) {
     this.insertStmt = db.prepare(INSERT_SQL);
@@ -60,6 +66,7 @@ export class JobEvaluationsRepository {
     this.countByVerdictStmt = db.prepare(COUNT_BY_VERDICT_SQL);
     this.dedupNullStmt = db.prepare(DEDUP_NULL_CV_SQL);
     this.dedupWithStmt = db.prepare(DEDUP_WITH_CV_SQL);
+    this.findByInputHashStmt = db.prepare(FIND_BY_INPUT_HASH_SQL);
   }
 
   insert(row: JobEvaluationInsert): void {
@@ -107,6 +114,25 @@ export class JobEvaluationsRepository {
       key.extractor_version,
       key.criteria_version_id
     ) as JobEvaluationRow | undefined;
+  }
+
+  /**
+   * Cache lookup ignoring criteria_version_id. Returns the most-recent
+   * job_evaluation whose `(input_hash, extractor_version)` matches the
+   * supplied pair, regardless of which criteria version produced it.
+   *
+   * Used by the orchestrator's three-branch dedup logic to reuse
+   * `facts_json` across criteria versions — same posting, same
+   * extractor, different criteria. The caller still persists a fresh
+   * job_evaluations row scoped to the CURRENT criteria_version_id.
+   */
+  findByInputHash(
+    inputHash: string,
+    extractorVersion: string
+  ): JobEvaluationRow | undefined {
+    return this.findByInputHashStmt.get(inputHash, extractorVersion) as
+      | JobEvaluationRow
+      | undefined;
   }
 
   listByVerdict(verdict: Verdict, limit = 50): JobEvaluationRow[] {

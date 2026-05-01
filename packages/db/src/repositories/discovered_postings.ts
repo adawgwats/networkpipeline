@@ -11,6 +11,15 @@ export type UpdateStatusOpts = {
   jobEvaluationId?: string;
 };
 
+export type FindByInputHashOpts = {
+  /**
+   * When set, restricts results to rows whose linked job_evaluation
+   * matches this extractor_version. Used by the cache lookup to
+   * ensure facts_json was produced by a compatible extractor.
+   */
+  extractorVersion?: string;
+};
+
 const ALL_STATUSES: readonly DiscoveredPostingStatus[] = [
   "queued",
   "pre_filter_rejected",
@@ -24,8 +33,9 @@ INSERT INTO discovered_postings (
   id, saved_search_id, search_run_id, source, external_ref, url,
   title, company, raw_metadata_json, status,
   pre_filter_reason_code, job_evaluation_id,
+  cached_job_evaluation_id, input_hash,
   discovered_at, last_seen_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const FIND_BY_ID_SQL = `SELECT * FROM discovered_postings WHERE id = ?`;
@@ -66,6 +76,9 @@ WHERE id = ?
 const TOUCH_LAST_SEEN_SQL = `
 UPDATE discovered_postings SET last_seen_at = ? WHERE id = ?
 `;
+const SET_CACHED_JOB_EVAL_SQL = `
+UPDATE discovered_postings SET cached_job_evaluation_id = ? WHERE id = ?
+`;
 const COUNT_BY_STATUS_FOR_RUN_SQL = `
 SELECT status, COUNT(*) AS n
 FROM discovered_postings
@@ -83,6 +96,7 @@ export class DiscoveredPostingsRepository {
   private readonly listByStatusStmt: ReturnType<AppDatabase["prepare"]>;
   private readonly updateStatusStmt: ReturnType<AppDatabase["prepare"]>;
   private readonly touchLastSeenStmt: ReturnType<AppDatabase["prepare"]>;
+  private readonly setCachedJobEvalStmt: ReturnType<AppDatabase["prepare"]>;
   private readonly countByStatusForRunStmt: ReturnType<AppDatabase["prepare"]>;
 
   constructor(private readonly db: AppDatabase) {
@@ -95,6 +109,7 @@ export class DiscoveredPostingsRepository {
     this.listByStatusStmt = db.prepare(LIST_BY_STATUS_SQL);
     this.updateStatusStmt = db.prepare(UPDATE_STATUS_SQL);
     this.touchLastSeenStmt = db.prepare(TOUCH_LAST_SEEN_SQL);
+    this.setCachedJobEvalStmt = db.prepare(SET_CACHED_JOB_EVAL_SQL);
     this.countByStatusForRunStmt = db.prepare(COUNT_BY_STATUS_FOR_RUN_SQL);
   }
 
@@ -112,6 +127,8 @@ export class DiscoveredPostingsRepository {
       row.status,
       row.pre_filter_reason_code,
       row.job_evaluation_id,
+      row.cached_job_evaluation_id,
+      row.input_hash,
       row.discovered_at,
       row.last_seen_at
     );
@@ -203,6 +220,16 @@ export class DiscoveredPostingsRepository {
    */
   touchLastSeen(id: string, isoTimestamp: string): void {
     this.touchLastSeenStmt.run(isoTimestamp, id);
+  }
+
+  /**
+   * Set the `cached_job_evaluation_id` FK on a row. Used by the
+   * orchestrator's three-branch dedup logic when a prior evaluation's
+   * `facts_json` is reusable across criteria versions. The evaluator
+   * loop reads this column to skip the extract LLM call.
+   */
+  setCachedJobEvaluationId(id: string, jobEvaluationId: string): void {
+    this.setCachedJobEvalStmt.run(jobEvaluationId, id);
   }
 
   /**

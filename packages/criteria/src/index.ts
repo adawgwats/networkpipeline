@@ -1,4 +1,5 @@
 export {
+  ALL_ROLE_KINDS,
   CURRENT_SCHEMA_VERSION,
   acceptedCalibrationExampleSchema,
   calibrationSchema,
@@ -10,6 +11,7 @@ export {
   mustNotHaveConditionSchema,
   profileSchema,
   rejectedCalibrationExampleSchema,
+  roleKindSchema,
   seniorityBandSchema,
   softPreferenceItemSchema,
   softPreferencesSchema,
@@ -28,6 +30,7 @@ export type {
   MustNotHaveCondition,
   Profile,
   RejectedCalibrationExample,
+  RoleKind,
   SeniorityBand,
   SoftPreferenceItem,
   SoftPreferences,

@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { htmlToText } from "../connector/html.js";
+import { inferRoleKindsFromTitle } from "../connector/role_kind.js";
 import { inferSeniorityFromTitle } from "../connector/seniority.js";
-import type {
-  DirectFetchResult,
-  DirectFetchSourceConnector,
-  FetchImpl,
-  NormalizedDiscoveredPosting,
-  SourceQuery
+import {
+  DEFAULT_MAX_RESULTS,
+  type DirectFetchResult,
+  type DirectFetchSourceConnector,
+  type FetchImpl,
+  type NormalizedDiscoveredPosting,
+  type SourceQuery
 } from "../connector/types.js";
 
 /**
@@ -57,7 +59,10 @@ export function leverConnector(
     description() {
       return "Lever public postings API connector (https://api.lever.co/v0/postings).";
     },
-    async discoverDirect(query: SourceQuery): Promise<DirectFetchResult> {
+    async discoverDirect(
+      query: SourceQuery,
+      maxResults: number = DEFAULT_MAX_RESULTS
+    ): Promise<DirectFetchResult> {
       if (query.source !== "lever") {
         return {
           kind: "direct_fetch_result",
@@ -135,7 +140,9 @@ export function leverConnector(
           ]
         };
       }
-      const postings = parsed.data.map((p) => normalizeLeverPosting(p, slug));
+      const postings = parsed.data
+        .map((p) => normalizeLeverPosting(p, slug))
+        .slice(0, maxResults);
       return {
         kind: "direct_fetch_result",
         source: "lever",
@@ -183,6 +190,7 @@ function normalizeLeverPosting(
     is_onsite_required: isOnsiteRequired,
     employment_type: mapLeverCommitment(cats.commitment ?? null),
     inferred_seniority_signals: inferSeniorityFromTitle(posting.text),
+    inferred_role_kinds: inferRoleKindsFromTitle(posting.text),
     raw_metadata: { ...posting }
   };
 }

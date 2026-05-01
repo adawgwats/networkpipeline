@@ -59,6 +59,20 @@ export type DiscoveredPostingRow = {
   pre_filter_reason_code: string | null;
   /** FK to job_evaluations.id, non-null when status="evaluated". */
   job_evaluation_id: string | null;
+  /**
+   * FK to a PRIOR job_evaluations.id whose `facts_json` can be reused
+   * (same posting body, same extractor_version, DIFFERENT criteria
+   * version). When set, the evaluator skips the extract LLM call and
+   * runs gates+values+score against the current criteria, persisting
+   * a fresh job_evaluations row scoped to the new criteria_version_id.
+   */
+  cached_job_evaluation_id: string | null;
+  /**
+   * SHA-256 of (title + company + first 2KB of description) — see
+   * `computePostingInputHash`. Used to look up cached evaluations
+   * across criteria versions.
+   */
+  input_hash: string | null;
   /** ISO-8601. */
   discovered_at: string;
   /** ISO-8601, updated when the same posting reappears in a later run. */

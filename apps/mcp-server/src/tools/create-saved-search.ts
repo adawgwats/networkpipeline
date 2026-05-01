@@ -12,7 +12,13 @@ const inputSchema = z
     sources_json: z.string().min(1),
     queries_json: z.string().min(1),
     criteria_overlay_path: z.string().nullable().optional(),
-    cadence: cadenceSchema.optional()
+    cadence: cadenceSchema.optional(),
+    /**
+     * Optional per-search result cap. When set, connectors truncate
+     * their result list to at most this many postings. Default 50.
+     * Caps each search at $0.50 worth of LLM calls instead of $5+.
+     */
+    max_results: z.number().int().positive().max(500).optional()
   })
   .strict();
 
@@ -48,6 +54,7 @@ export function makeCreateSavedSearchTool(
         queries_json: input.queries_json,
         criteria_overlay_path: input.criteria_overlay_path ?? null,
         cadence: input.cadence ?? "on_demand",
+        max_results: input.max_results ?? null,
         created_at: now,
         updated_at: now,
         last_run_at: null

@@ -1,17 +1,22 @@
 import { z } from "zod";
 import { htmlToText } from "../connector/html.js";
+import { inferRoleKindsFromTitle } from "../connector/role_kind.js";
 import { inferSeniorityFromTitle } from "../connector/seniority.js";
-import type {
-  IngestInstruction,
-  InstructionSourceConnector,
-  NormalizedDiscoveredPosting,
-  SourceQuery
+import {
+  DEFAULT_MAX_RESULTS,
+  type IngestInstruction,
+  type InstructionSourceConnector,
+  type NormalizedDiscoveredPosting,
+  type SourceQuery
 } from "../connector/types.js";
 
 /**
- * Default per-search result cap. Tunable via factory options later.
+ * Per-connector default cap when neither the SavedSearch nor the
+ * IndeedConnectorOptions override it. Indeed's MCP `limit` parameter
+ * accepts arbitrary positive integers; we default to the package-wide
+ * DEFAULT_MAX_RESULTS so behavior matches the other connectors.
  */
-const DEFAULT_LIMIT = 25;
+const DEFAULT_LIMIT = DEFAULT_MAX_RESULTS;
 
 /**
  * Schema for the Indeed MCP tool response. The Anthropic-hosted
@@ -36,7 +41,12 @@ const indeedSearchResponseSchema = z.object({
 });
 
 export type IndeedConnectorOptions = {
-  /** Per-search result cap forwarded to the Indeed MCP. Default 25. */
+  /**
+   * Per-search result cap forwarded to the Indeed MCP. Default
+   * DEFAULT_MAX_RESULTS (50). Overridden per-call by the orchestrator
+   * via the `maxResults` arg on `discoverInstruction` when the
+   * SavedSearch sets a smaller cap.
+   */
   limit?: number;
 };
 
@@ -60,16 +70,20 @@ export function indeedConnector(
     },
     discoverInstruction(
       query: SourceQuery,
-      runId: string
+      runId: string,
+      maxResults?: number
     ): IngestInstruction {
       if (query.source !== "indeed") {
         throw new Error(
           `indeedConnector: expected query.source === "indeed", got "${query.source}"`
         );
       }
+      // Per-call cap takes precedence over the factory default. This
+      // is how a SavedSearch.max_results=10 reaches the MCP `limit` arg.
+      const effectiveLimit = maxResults ?? limit;
       const args: Record<string, unknown> = {
         query: query.query,
-        limit
+        limit: effectiveLimit
       };
       if (query.location !== undefined) args.location = query.location;
       return {
@@ -86,10 +100,13 @@ export function indeedConnector(
         search_run_id: runId
       };
     },
-    recordResults(payload: unknown): NormalizedDiscoveredPosting[] {
+    recordResults(
+      payload: unknown,
+      maxResults: number = DEFAULT_MAX_RESULTS
+    ): NormalizedDiscoveredPosting[] {
       const parsed = indeedSearchResponseSchema.safeParse(payload);
       if (!parsed.success) return [];
-      return parsed.data.jobs.map(normalizeIndeedJob);
+      return parsed.data.jobs.slice(0, maxResults).map(normalizeIndeedJob);
     }
   };
 }
@@ -119,6 +136,7 @@ function normalizeIndeedJob(
     is_onsite_required: isOnsiteRequired,
     employment_type: inferEmploymentType(snippet, job.title),
     inferred_seniority_signals: inferSeniorityFromTitle(job.title),
+    inferred_role_kinds: inferRoleKindsFromTitle(job.title),
     raw_metadata: { ...job }
   };
 }

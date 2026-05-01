@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { htmlToText } from "../connector/html.js";
+import { inferRoleKindsFromTitle } from "../connector/role_kind.js";
 import { inferSeniorityFromTitle } from "../connector/seniority.js";
-import type {
-  DirectFetchResult,
-  DirectFetchSourceConnector,
-  FetchImpl,
-  NormalizedDiscoveredPosting,
-  SourceQuery
+import {
+  DEFAULT_MAX_RESULTS,
+  type DirectFetchResult,
+  type DirectFetchSourceConnector,
+  type FetchImpl,
+  type NormalizedDiscoveredPosting,
+  type SourceQuery
 } from "../connector/types.js";
 
 /**
@@ -50,7 +52,10 @@ export function ashbyConnector(
     description() {
       return "Ashby public job-board posting-api connector (https://api.ashbyhq.com/posting-api/job-board).";
     },
-    async discoverDirect(query: SourceQuery): Promise<DirectFetchResult> {
+    async discoverDirect(
+      query: SourceQuery,
+      maxResults: number = DEFAULT_MAX_RESULTS
+    ): Promise<DirectFetchResult> {
       if (query.source !== "ashby") {
         return {
           kind: "direct_fetch_result",
@@ -132,9 +137,9 @@ export function ashbyConnector(
           ]
         };
       }
-      const postings = parsed.data.jobs.map((job) =>
-        normalizeAshbyJob(job, slug)
-      );
+      const postings = parsed.data.jobs
+        .map((job) => normalizeAshbyJob(job, slug))
+        .slice(0, maxResults);
       return {
         kind: "direct_fetch_result",
         source: "ashby",
@@ -179,6 +184,7 @@ function normalizeAshbyJob(
     is_onsite_required: isOnsiteRequired,
     employment_type: mapAshbyEmploymentType(job.employmentType ?? null),
     inferred_seniority_signals: inferSeniorityFromTitle(job.title),
+    inferred_role_kinds: inferRoleKindsFromTitle(job.title),
     raw_metadata: { ...job }
   };
 }

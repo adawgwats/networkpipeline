@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { canonicalizeUrl } from "../dedup.js";
+import { canonicalizeUrl, computePostingInputHash } from "../dedup.js";
+import type { NormalizedDiscoveredPosting } from "../connector/types.js";
 
 describe("canonicalizeUrl", () => {
   it("lowercases the host", () => {
@@ -65,5 +66,66 @@ describe("canonicalizeUrl", () => {
       canonicalizeUrl(input),
       "https://jobs.lever.co/Acme/abc-123?id=7"
     );
+  });
+});
+
+function basePosting(
+  overrides: Partial<NormalizedDiscoveredPosting> = {}
+): NormalizedDiscoveredPosting {
+  return {
+    source: "greenhouse",
+    external_ref: "x",
+    url: "https://example.com/x",
+    title: "Software Engineer",
+    company: "Acme",
+    description_excerpt: "Build cool things.",
+    onsite_locations: [],
+    is_onsite_required: null,
+    employment_type: null,
+    inferred_seniority_signals: [],
+    inferred_role_kinds: ["engineering"],
+    raw_metadata: {},
+    ...overrides
+  };
+}
+
+describe("computePostingInputHash", () => {
+  it("produces a stable hash for identical postings", () => {
+    const a = computePostingInputHash(basePosting());
+    const b = computePostingInputHash(basePosting());
+    assert.equal(a, b);
+    assert.equal(a.length, 64); // SHA-256 hex
+  });
+
+  it("differs when title changes", () => {
+    const a = computePostingInputHash(basePosting({ title: "A" }));
+    const b = computePostingInputHash(basePosting({ title: "B" }));
+    assert.notEqual(a, b);
+  });
+
+  it("differs when company changes", () => {
+    const a = computePostingInputHash(basePosting({ company: "Acme" }));
+    const b = computePostingInputHash(basePosting({ company: "Beta" }));
+    assert.notEqual(a, b);
+  });
+
+  it("ignores trailing whitespace and case in title/company", () => {
+    const a = computePostingInputHash(
+      basePosting({ title: "Software Engineer", company: "Acme" })
+    );
+    const b = computePostingInputHash(
+      basePosting({ title: "  software engineer  ", company: "ACME" })
+    );
+    assert.equal(a, b);
+  });
+
+  it("treats null vs empty description_excerpt as equal", () => {
+    const a = computePostingInputHash(
+      basePosting({ description_excerpt: null })
+    );
+    const b = computePostingInputHash(
+      basePosting({ description_excerpt: "" })
+    );
+    assert.equal(a, b);
   });
 });

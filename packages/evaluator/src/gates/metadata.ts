@@ -1,5 +1,6 @@
 import type {
   EmploymentType,
+  RoleKind,
   SeniorityBand
 } from "@networkpipeline/criteria";
 
@@ -28,4 +29,15 @@ export type DiscoveredPostingMetadata = {
   is_onsite_required: boolean | null;
   employment_type: EmploymentType | null;
   inferred_seniority_signals: SeniorityBand[];
+  /**
+   * Best-effort title-classifier output. Drives the deterministic
+   * `role_kind` gate (see check.ts / pre_extraction.ts). Empty array
+   * or `["other"]` means "title didn't match any kind"; the gate
+   * defers in that case (does NOT reject).
+   *
+   * Optional for backward compatibility with callers that haven't
+   * been updated yet (e.g. unit tests pre-dating the gate). Treated
+   * as `["other"]` (defer) when absent.
+   */
+  inferred_role_kinds?: RoleKind[];
 };

@@ -35,8 +35,13 @@ const TOOL_DESCRIPTION =
  * Hash the trimmed, lower-cased first 8 KiB of the posting as a dedup key.
  * Uses the first 8 KiB rather than the full text so minor editorial changes
  * (typo fixes, edit footers) don't force re-extraction.
+ *
+ * Exported so the discovery orchestrator can compute the same hash for
+ * its cache lookup BEFORE the LLM extract call — letting it short-circuit
+ * the extract stage when a prior evaluation already produced facts for
+ * this exact posting body.
  */
-function hashPostingText(text: string): string {
+export function hashPostingText(text: string): string {
   const normalized = text.trim().slice(0, 8192).toLowerCase();
   return createHash("sha256").update(normalized).digest("hex");
 }

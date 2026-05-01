@@ -11,7 +11,16 @@ import type {
   EvaluationResult,
   JsonOutputProvider
 } from "@networkpipeline/evaluator";
-import { evaluateJob, preExtractionGateCheck } from "@networkpipeline/evaluator";
+import {
+  EXTRACTOR_VERSION,
+  evaluateJob,
+  evaluateJobWithCachedFacts,
+  hashPostingText,
+  preExtractionGateCheck
+} from "@networkpipeline/evaluator";
+import type { ExtractedJobFacts } from "@networkpipeline/evaluator";
+import { inferRoleKindsFromTitle } from "./connector/role_kind.js";
+import { inferSeniorityFromTitle } from "./connector/seniority.js";
 import type {
   AnyConnector,
   IngestInstruction,
@@ -19,6 +28,14 @@ import type {
   SourceId,
   SourceQuery
 } from "./connector/types.js";
+
+function extractStringField(
+  raw: Record<string, unknown>,
+  key: string
+): string | null {
+  const v = raw[key];
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
 
 export type DiscoveryRepositories = {
   savedSearches: SavedSearchesRepository;
@@ -67,6 +84,13 @@ export type StartDiscoveryOptions = {
   queries: SourceQuery[];
   /** Connector lookup; tests inject mocks. */
   connectorById: (id: SourceId) => AnyConnector | undefined;
+  /**
+   * Per-search result cap, forwarded to every connector. Caps direct
+   * fetches via `discoverDirect(query, maxResults)` and instructions
+   * via `discoverInstruction(query, runId, maxResults)`. Defaults to
+   * the connector-side fallback (DEFAULT_MAX_RESULTS = 50).
+   */
+  maxResults?: number;
   /** Override new Date() for deterministic tests. Defaults to () => new Date(). */
   now?: () => Date;
 };
@@ -133,7 +157,7 @@ export async function startDiscovery(
       continue;
     }
     if (connector.kind === "direct") {
-      const result = await connector.discoverDirect(query);
+      const result = await connector.discoverDirect(query, options.maxResults);
       direct_postings.push(...result.postings);
       for (const e of result.errors) {
         direct_errors.push({
@@ -143,7 +167,9 @@ export async function startDiscovery(
         });
       }
     } else {
-      instructions.push(connector.discoverInstruction(query, options.runId));
+      instructions.push(
+        connector.discoverInstruction(query, options.runId, options.maxResults)
+      );
     }
   }
 
@@ -155,6 +181,14 @@ export type RecordOptions = {
   runId: string;
   postings: NormalizedDiscoveredPosting[];
   criteria: CandidateCriteria;
+  /**
+   * Current criteria_version_id. When supplied, recordDiscoveredPostings
+   * checks for prior job_evaluations with this exact criteria version
+   * (treats those as "duplicate, skip evaluation"). When omitted, the
+   * cross-criteria-version cache lookup still runs but the
+   * same-criteria-skip path is disabled.
+   */
+  criteriaVersionId?: string | null;
   /** Override Date.now for deterministic tests. */
   now?: () => Date;
 };
@@ -164,6 +198,12 @@ export type RecordResult = {
   pre_filter_rejected: number;
   duplicates_skipped: number;
   passed_to_eval: number;
+  /**
+   * Count of postings staged with `cached_job_evaluation_id` set.
+   * These survive `ready_for_eval_ids` (they still need scoring
+   * against the new criteria) but skip the extract LLM call.
+   */
+  cached_facts_reused: number;
   /** IDs of discovered_postings rows that need full evaluation. */
   ready_for_eval_ids: string[];
 };
@@ -200,24 +240,29 @@ export function recordDiscoveredPostings(
   let inserted_postings = 0;
   let pre_filter_rejected = 0;
   let duplicates_skipped = 0;
+  let cached_facts_reused = 0;
   const ready_for_eval_ids: string[] = [];
 
   for (const posting of options.postings) {
-    // Pre-insert dedup: same (source, external_ref) or url already
-    // staged in a previous run. We still record a fresh row for
-    // search-run accounting but mark it duplicate immediately.
-    const priorByRef =
-      posting.external_ref !== null
-        ? repos.discoveredPostings.findByExternalRef(
-            posting.source,
-            posting.external_ref
-          )
-        : undefined;
-    const priorByUrl =
-      !priorByRef && posting.url !== null
-        ? repos.discoveredPostings.findByUrl(posting.url)
-        : undefined;
-    const prior = priorByRef ?? priorByUrl;
+    // Hash the SYNTHESIZED posting text (the same body the evaluator
+    // would feed to extract) so this matches `job_evaluations.input_hash`
+    // produced by `extractJobFacts`. computePostingInputHash exists
+    // for cases where we want a connector-only canonical hash, but
+    // for cache lookup we need byte-equivalence with extract's hash.
+    const synthText = synthesizePostingText(
+      posting.title,
+      posting.company,
+      posting.raw_metadata
+    );
+    const inputHash = hashPostingText(synthText);
+
+    // Cache lookup: any prior evaluation with the same input_hash AND
+    // extractor_version, regardless of criteria_version_id. We
+    // distinguish three cases below.
+    const priorEval = repos.jobEvaluations.findByInputHash(
+      inputHash,
+      EXTRACTOR_VERSION
+    );
 
     const id = randomUUID();
     repos.discoveredPostings.insert({
@@ -233,21 +278,40 @@ export function recordDiscoveredPostings(
       status: "queued",
       pre_filter_reason_code: null,
       job_evaluation_id: null,
+      cached_job_evaluation_id: null,
+      input_hash: inputHash,
       discovered_at: ts,
       last_seen_at: ts
     });
     inserted_postings += 1;
 
-    if (prior) {
-      duplicates_skipped += 1;
-      // Touch the prior row's last_seen_at so freshness reflects the
-      // re-discovery, then mark this run's row as duplicate and link
-      // its evaluation if known.
-      repos.discoveredPostings.touchLastSeen(prior.id, ts);
-      repos.discoveredPostings.updateStatus(id, "duplicate", {
-        jobEvaluationId: prior.job_evaluation_id ?? undefined
-      });
-      continue;
+    if (priorEval) {
+      const sameCriteria =
+        options.criteriaVersionId !== undefined &&
+        options.criteriaVersionId !== null &&
+        priorEval.criteria_version_id === options.criteriaVersionId;
+      const verdictTerminal =
+        priorEval.verdict !== "needs_review";
+
+      if (sameCriteria && verdictTerminal) {
+        // Branch 1 (same criteria, terminal verdict): skip everything.
+        duplicates_skipped += 1;
+        repos.discoveredPostings.updateStatus(id, "duplicate", {
+          jobEvaluationId: priorEval.id
+        });
+        continue;
+      }
+      // Branch 2 (different criteria, OR same criteria but
+      // needs_review): reuse facts, re-run gates+values+score.
+      cached_facts_reused += 1;
+      // Use raw SQL update via a private path: we need to set
+      // cached_job_evaluation_id on the just-inserted row. The repo's
+      // updateStatus only manages status transitions, not auxiliary
+      // FKs, so we run a one-off statement here.
+      repos.discoveredPostings.setCachedJobEvaluationId(id, priorEval.id);
+      // Posting still goes through pre-extraction gates and (if it
+      // survives) into ready_for_eval_ids; the eval loop checks the
+      // cached_job_evaluation_id column to skip extract.
     }
 
     // Pre-extraction gates over the metadata subset.
@@ -258,7 +322,8 @@ export function recordDiscoveredPostings(
       onsite_locations: posting.onsite_locations,
       is_onsite_required: posting.is_onsite_required,
       employment_type: posting.employment_type,
-      inferred_seniority_signals: posting.inferred_seniority_signals
+      inferred_seniority_signals: posting.inferred_seniority_signals,
+      inferred_role_kinds: posting.inferred_role_kinds
     };
     const gate = preExtractionGateCheck(metadata, options.criteria);
     if (!gate.pass) {
@@ -287,6 +352,7 @@ export function recordDiscoveredPostings(
     inserted_postings,
     pre_filter_rejected,
     duplicates_skipped,
+    cached_facts_reused,
     passed_to_eval: ready_for_eval_ids.length,
     ready_for_eval_ids
   };
@@ -365,11 +431,77 @@ export async function evaluateAllSurvivors(
     }
     const text = synthesizePostingText(row.title, row.company, raw);
 
-    const result = await evaluateJob(
-      options.provider,
-      { text, sourceUrl: row.url ?? undefined },
-      options.criteria
-    );
+    // Reconstruct DiscoveredPostingMetadata from the persisted columns
+    // + raw_metadata so the post-extraction `role_kind` gate has the
+    // same title-classifier values pre-extraction used. We re-run the
+    // classifier here to avoid storing it twice (the alternative is
+    // adding a column on discovered_postings; the regex is cheap so
+    // recomputing is fine). The value is used for gating only.
+    const inferredRoleKinds = inferRoleKindsFromTitle(row.title ?? "");
+    const inferredSeniority = inferSeniorityFromTitle(row.title ?? "");
+    const metadata: DiscoveredPostingMetadata = {
+      title: row.title ?? "",
+      company: row.company ?? "",
+      description_excerpt: extractStringField(raw, "description_excerpt"),
+      onsite_locations: [],
+      is_onsite_required: null,
+      employment_type: null,
+      inferred_seniority_signals: inferredSeniority,
+      inferred_role_kinds: inferredRoleKinds
+    };
+
+    // Cached-facts branch: if a prior evaluation against a different
+    // criteria version produced reusable facts_json, skip the extract
+    // LLM call. The result still gets a fresh job_evaluations row
+    // scoped to the CURRENT criteria_version_id; we only reuse the
+    // expensive extracted facts.
+    let result: EvaluationResult;
+    const cachedEvalId = row.cached_job_evaluation_id;
+    if (cachedEvalId) {
+      const cachedEval = repos.jobEvaluations.findById(cachedEvalId);
+      if (cachedEval) {
+        try {
+          const cachedFacts = JSON.parse(
+            cachedEval.facts_json
+          ) as ExtractedJobFacts;
+          result = await evaluateJobWithCachedFacts(
+            options.provider,
+            {
+              facts: cachedFacts,
+              inputHash: cachedEval.input_hash,
+              extractorVersion: cachedEval.extractor_version
+            },
+            options.criteria,
+            metadata
+          );
+        } catch {
+          // Defensive: malformed facts_json should never happen, but
+          // if it does, fall back to a full re-extract rather than
+          // crashing the run.
+          result = await evaluateJob(
+            options.provider,
+            { text, sourceUrl: row.url ?? undefined },
+            options.criteria,
+            metadata
+          );
+        }
+      } else {
+        // FK pointed to a row that no longer exists. Fall back.
+        result = await evaluateJob(
+          options.provider,
+          { text, sourceUrl: row.url ?? undefined },
+          options.criteria,
+          metadata
+        );
+      }
+    } else {
+      result = await evaluateJob(
+        options.provider,
+        { text, sourceUrl: row.url ?? undefined },
+        options.criteria,
+        metadata
+      );
+    }
 
     // Persist job_evaluations + provider_runs (mirrors
     // apps/mcp-server/src/persistence.ts exactly).

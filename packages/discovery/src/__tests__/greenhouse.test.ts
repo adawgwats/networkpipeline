@@ -172,6 +172,48 @@ describe("greenhouseConnector", () => {
     assert.equal(result.errors.length, 1);
   });
 
+  it("respects maxResults cap by truncating after mapping", async () => {
+    // Mock returns 100 jobs; max_results=10 → 10 returned.
+    const manyJobs = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      title: `Software Engineer ${i + 1}`,
+      content: "<p>Build things.</p>",
+      absolute_url: `https://boards-api.greenhouse.io/acme/jobs/${i + 1}`,
+      location: { name: "Remote" },
+      offices: [{ location: "Remote" }],
+      metadata: []
+    }));
+    const stub = mockFetch({ json: { jobs: manyJobs } });
+    const c = greenhouseConnector({ fetchImpl: stub });
+    const result = await c.discoverDirect(
+      { source: "greenhouse", company_slug: "acme" },
+      10
+    );
+    assert.equal(result.postings.length, 10);
+    // Truncation preserves source order — first 10 jobs should remain.
+    assert.equal(result.postings[0].external_ref, "1");
+    assert.equal(result.postings[9].external_ref, "10");
+  });
+
+  it("falls back to DEFAULT_MAX_RESULTS (50) when no cap supplied", async () => {
+    const manyJobs = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      title: `Software Engineer ${i + 1}`,
+      content: "<p>x</p>",
+      absolute_url: `https://example.com/${i + 1}`,
+      location: { name: "Remote" },
+      offices: [{ location: "Remote" }],
+      metadata: []
+    }));
+    const stub = mockFetch({ json: { jobs: manyJobs } });
+    const c = greenhouseConnector({ fetchImpl: stub });
+    const result = await c.discoverDirect({
+      source: "greenhouse",
+      company_slug: "acme"
+    });
+    assert.equal(result.postings.length, 50);
+  });
+
   it("constructs the correct URL", async () => {
     let capturedUrl = "";
     const stub: FetchImpl = (async (input: unknown) => {

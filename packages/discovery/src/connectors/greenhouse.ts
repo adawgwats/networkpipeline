@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { htmlToText } from "../connector/html.js";
+import { inferRoleKindsFromTitle } from "../connector/role_kind.js";
 import { inferSeniorityFromTitle } from "../connector/seniority.js";
-import type {
-  DirectFetchResult,
-  DirectFetchSourceConnector,
-  FetchImpl,
-  NormalizedDiscoveredPosting,
-  SourceQuery
+import {
+  DEFAULT_MAX_RESULTS,
+  type DirectFetchResult,
+  type DirectFetchSourceConnector,
+  type FetchImpl,
+  type NormalizedDiscoveredPosting,
+  type SourceQuery
 } from "../connector/types.js";
 
 /**
@@ -69,7 +71,10 @@ export function greenhouseConnector(
     description() {
       return "Greenhouse public boards-api connector (https://boards-api.greenhouse.io).";
     },
-    async discoverDirect(query: SourceQuery): Promise<DirectFetchResult> {
+    async discoverDirect(
+      query: SourceQuery,
+      maxResults: number = DEFAULT_MAX_RESULTS
+    ): Promise<DirectFetchResult> {
       if (query.source !== "greenhouse") {
         return {
           kind: "direct_fetch_result",
@@ -147,9 +152,14 @@ export function greenhouseConnector(
           ]
         };
       }
-      const postings = parsed.data.jobs.map((job) =>
-        normalizeGreenhouseJob(job, slug)
-      );
+      // Map first, THEN truncate so the cap reflects the source's
+      // own ordering. Greenhouse returns active jobs sorted by their
+      // internal ordering (not by date) — truncating raw before mapping
+      // would be equivalent here, but keeping the map+slice order
+      // matches the contract described in DirectFetchSourceConnector.
+      const postings = parsed.data.jobs
+        .map((job) => normalizeGreenhouseJob(job, slug))
+        .slice(0, maxResults);
       return {
         kind: "direct_fetch_result",
         source: "greenhouse",
@@ -186,6 +196,7 @@ function normalizeGreenhouseJob(
     is_onsite_required: isOnsiteRequired,
     employment_type: extractEmploymentType(job.metadata ?? null),
     inferred_seniority_signals: inferSeniorityFromTitle(job.title),
+    inferred_role_kinds: inferRoleKindsFromTitle(job.title),
     raw_metadata: { ...job }
   };
 }

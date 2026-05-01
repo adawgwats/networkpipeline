@@ -12,9 +12,12 @@ export type {
   WorkItem
 } from "./connector/types.js";
 
+export { DEFAULT_MAX_RESULTS } from "./connector/types.js";
+
 export { inferSeniorityFromTitle } from "./connector/seniority.js";
+export { inferRoleKindsFromTitle } from "./connector/role_kind.js";
 export { htmlToText } from "./connector/html.js";
-export { canonicalizeUrl } from "./dedup.js";
+export { canonicalizeUrl, computePostingInputHash } from "./dedup.js";
 
 export { indeedConnector, type IndeedConnectorOptions } from "./connectors/indeed.js";
 export {

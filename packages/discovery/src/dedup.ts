@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import type { NormalizedDiscoveredPosting } from "./connector/types.js";
+
 /**
  * Tracking-param prefixes stripped from query strings during URL
  * canonicalization. Anything starting with one of these is removed
@@ -64,4 +67,31 @@ export function canonicalizeUrl(input: string): string {
   }
 
   return parsed.toString();
+}
+
+/**
+ * Compute a stable extraction-cache key for a posting. The hash covers
+ * the body that the LLM extractor sees (title + company + first 2KB of
+ * the description excerpt) and is criteria-agnostic — exactly what
+ * `extractor_version` + `input_hash` keys the job_evaluations cache by.
+ *
+ * Used by the orchestrator's three-branch dedup logic in
+ * `recordDiscoveredPostings`:
+ *   - same input_hash + same criteria_version → mark duplicate, skip
+ *   - same input_hash + DIFFERENT criteria_version → reuse facts, skip
+ *     extract LLM call, re-run gates+values+score against the new
+ *     criteria
+ *   - no match → run the full pipeline
+ *
+ * Lowercases and trims so trivial whitespace differences don't bust the
+ * cache. The 2KB cap matches the size connectors store in
+ * `description_excerpt`.
+ */
+export function computePostingInputHash(p: NormalizedDiscoveredPosting): string {
+  const canonical = [
+    p.title.trim().toLowerCase(),
+    p.company.trim().toLowerCase(),
+    (p.description_excerpt ?? "").slice(0, 2048).trim().toLowerCase()
+  ].join("\n---\n");
+  return createHash("sha256").update(canonical).digest("hex");
 }

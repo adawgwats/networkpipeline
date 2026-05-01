@@ -17,6 +17,7 @@ function baseSearch(
     ]),
     criteria_overlay_path: null,
     cadence: "on_demand",
+    max_results: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     last_run_at: null,
@@ -39,6 +40,26 @@ describe("SavedSearchesRepository — basic CRUD", () => {
     // JSON round-trip preserved
     const sources = JSON.parse(out!.sources_json) as string[];
     assert.deepEqual(sources, ["indeed", "greenhouse"]);
+  });
+
+  it("round-trips max_results when set", () => {
+    repo.insert(
+      baseSearch({
+        id: "ss-cap",
+        label: "with cap",
+        max_results: 25
+      })
+    );
+    const out = repo.findById("ss-cap");
+    assert.equal(out?.max_results, 25);
+  });
+
+  it("max_results defaults to null when omitted", () => {
+    repo.insert(
+      baseSearch({ id: "ss-uncap", label: "no cap", max_results: null })
+    );
+    const out = repo.findById("ss-uncap");
+    assert.equal(out?.max_results, null);
   });
 
   it("preserves criteria_overlay_path when set", () => {
