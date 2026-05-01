@@ -6,6 +6,7 @@ import {
   DiscoveredPostingsRepository,
   JobEvaluationsRepository,
   McpInvocationsRepository,
+  PendingEvaluationsRepository,
   ProviderRunsRepository,
   SavedSearchesRepository,
   SearchRunsRepository,
@@ -56,7 +57,8 @@ function buildRepos(connection: Connection): Repositories {
     criteriaVersions: new CandidateCriteriaVersionsRepository(connection.db),
     savedSearches: new SavedSearchesRepository(connection.db),
     searchRuns: new SearchRunsRepository(connection.db),
-    discoveredPostings: new DiscoveredPostingsRepository(connection.db)
+    discoveredPostings: new DiscoveredPostingsRepository(connection.db),
+    pendingEvaluations: new PendingEvaluationsRepository(connection.db)
   };
 }
 

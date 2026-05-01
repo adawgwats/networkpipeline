@@ -6,6 +6,7 @@ import {
   DiscoveredPostingsRepository,
   JobEvaluationsRepository,
   McpInvocationsRepository,
+  PendingEvaluationsRepository,
   ProviderRunsRepository,
   SavedSearchesRepository,
   SearchRunsRepository,
@@ -14,9 +15,7 @@ import {
 } from "@networkpipeline/db";
 import {
   AnthropicJsonOutputProvider,
-  ClaudeCodeJsonOutputProvider,
-  type JsonOutputProvider,
-  type SamplingDelegate
+  type JsonOutputProvider
 } from "@networkpipeline/evaluator";
 
 export type Repositories = {
@@ -27,6 +26,7 @@ export type Repositories = {
   savedSearches: SavedSearchesRepository;
   searchRuns: SearchRunsRepository;
   discoveredPostings: DiscoveredPostingsRepository;
+  pendingEvaluations: PendingEvaluationsRepository;
 };
 
 export type Runtime = {
@@ -34,8 +34,16 @@ export type Runtime = {
   criteria: CandidateCriteria;
   /** Path the criteria was loaded from. */
   criteriaPath: string;
-  /** LLM provider for all evaluation stages. */
-  provider: JsonOutputProvider;
+  /**
+   * Optional in-process LLM provider. Non-null only on the "anthropic"
+   * (API-key) path; null on the default "callback" path where LLM
+   * round-trips happen via MCP tool callbacks (record_llm_result).
+   *
+   * Tools that need a provider check this for null and either run the
+   * synchronous evaluateJob flow (when set) or return a
+   * `pending_llm_call` payload (when null).
+   */
+  provider: JsonOutputProvider | null;
   /** SQLite connection. Caller closes on shutdown. */
   connection: Connection;
   /** Typed repositories backed by the same connection. */
@@ -51,19 +59,19 @@ export type Runtime = {
 /**
  * Provider selection strategy.
  *
- *   - "claude_code": route LLM calls through the user's Claude Code session
- *     via MCP `sampling/createMessage`. Requires a `samplingDelegate`.
- *     Inference is billed against the Claude Code Max subscription, so no
- *     Anthropic API key is needed.
- *   - "anthropic": call the Anthropic API directly with an API key. Used
- *     for CI / automation / multi-user contexts where there is no Claude
- *     Code session driving the work.
- *   - "auto" (default): pick "claude_code" if a `samplingDelegate` is
- *     provided, otherwise fall back to "anthropic". This preserves
- *     backward-compat for existing API-key-based setups while making the
- *     in-Claude-Code path zero-config when a delegate is wired up.
+ *   - "callback" (default): no in-process LLM provider. Evaluation
+ *     pipelines pause and return `pending_llm_call` payloads to Claude
+ *     Code, which generates the JSON in its normal conversation and
+ *     resumes via the `record_llm_result` tool. This is the path that
+ *     works under Claude Code today and bills against the user's Max
+ *     subscription rather than per-token API spend.
+ *   - "anthropic": call the Anthropic API directly with an API key.
+ *     Preserved for CI / automation / multi-user contexts where there is
+ *     no Claude Code session driving the work.
+ *   - "auto": pick "anthropic" when ANTHROPIC_API_KEY is set, else
+ *     "callback". Default for environments that don't pin the kind.
  */
-export type ProviderKind = "claude_code" | "anthropic" | "auto";
+export type ProviderKind = "callback" | "anthropic" | "auto";
 
 export type LoadRuntimeOptions = {
   /** Override criteria file path. */
@@ -74,19 +82,13 @@ export type LoadRuntimeOptions = {
   anthropicModel?: string;
   /**
    * Provider selection. Defaults to "auto" — see {@link ProviderKind}.
-   * "claude_code" requires `samplingDelegate`. "anthropic" requires a key.
+   * "anthropic" requires a key. "callback" is the in-Claude-Code path.
    */
   providerKind?: ProviderKind;
   /**
-   * Sampling delegate used when the resolved provider is "claude_code".
-   * The MCP server constructs this lambda after the SDK's McpServer is
-   * built, since sampling is a server-to-client primitive that depends
-   * on a connected transport.
-   */
-  samplingDelegate?: SamplingDelegate;
-  /**
    * Inject a provider instead of constructing one. Used by tests to
-   * avoid real API calls.
+   * avoid real API calls. When passed, the runtime uses it regardless
+   * of `providerKind` (matching the previous semantics).
    */
   providerOverride?: JsonOutputProvider;
   /**
@@ -128,7 +130,8 @@ export async function loadRuntime(
     criteriaVersions: new CandidateCriteriaVersionsRepository(connection.db),
     savedSearches: new SavedSearchesRepository(connection.db),
     searchRuns: new SearchRunsRepository(connection.db),
-    discoveredPostings: new DiscoveredPostingsRepository(connection.db)
+    discoveredPostings: new DiscoveredPostingsRepository(connection.db),
+    pendingEvaluations: new PendingEvaluationsRepository(connection.db)
   };
 
   const criteriaVersionId = mirrorCriteriaToDb(
@@ -148,32 +151,23 @@ export async function loadRuntime(
 }
 
 /**
- * Resolve a JsonOutputProvider from LoadRuntimeOptions.
+ * Resolve the in-process LLM provider, if any, from LoadRuntimeOptions.
  *
- * Resolution rules:
- *   - explicit `providerKind: "claude_code"`: requires `samplingDelegate`,
- *     throws otherwise.
- *   - explicit `providerKind: "anthropic"`: constructs the API-key adapter
- *     (which itself throws if the key is missing).
- *   - default (`"auto"` or undefined): if a `samplingDelegate` is present,
- *     prefer Claude Code so users on a Max subscription don't pay twice;
- *     fall back to the Anthropic API path otherwise.
+ * Returns null on the "callback" path (the default in Claude Code): no
+ * in-process LLM is used; pipelines pause via `pending_llm_call`
+ * payloads and resume on `record_llm_result`.
+ *
+ * Returns a real provider on the "anthropic" path (CI/automation), and
+ * on "auto" when `ANTHROPIC_API_KEY` is present.
  *
  * Exported for unit tests; production callers go through `loadRuntime`.
  */
-export function buildProvider(options: LoadRuntimeOptions): JsonOutputProvider {
+export function buildProvider(
+  options: LoadRuntimeOptions
+): JsonOutputProvider | null {
   const kind: ProviderKind = options.providerKind ?? "auto";
 
-  if (kind === "claude_code") {
-    if (!options.samplingDelegate) {
-      throw new Error(
-        "loadRuntime: providerKind=claude_code requires a samplingDelegate."
-      );
-    }
-    return new ClaudeCodeJsonOutputProvider({
-      delegate: options.samplingDelegate
-    });
-  }
+  if (kind === "callback") return null;
 
   if (kind === "anthropic") {
     return new AnthropicJsonOutputProvider({
@@ -182,16 +176,17 @@ export function buildProvider(options: LoadRuntimeOptions): JsonOutputProvider {
     });
   }
 
-  // auto: prefer the in-session sampling path when wired, fall back to API.
-  if (options.samplingDelegate) {
-    return new ClaudeCodeJsonOutputProvider({
-      delegate: options.samplingDelegate
+  // auto: prefer Anthropic when a key is set; otherwise fall back to
+  // callback (no in-process provider; LLM round-trips via Claude Code).
+  const hasKey = (options.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY) !== undefined &&
+    (options.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY ?? "").length > 0;
+  if (hasKey) {
+    return new AnthropicJsonOutputProvider({
+      apiKey: options.anthropicApiKey,
+      defaultModel: options.anthropicModel
     });
   }
-  return new AnthropicJsonOutputProvider({
-    apiKey: options.anthropicApiKey,
-    defaultModel: options.anthropicModel
-  });
+  return null;
 }
 
 /**

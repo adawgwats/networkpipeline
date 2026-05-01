@@ -88,6 +88,18 @@ export async function valuesCheck(
   return { result, run };
 }
 
+/**
+ * Build the variable per-posting user prompt for values_check. Exposed
+ * (rather than kept private) so the callback-pipeline state machine
+ * reuses the same wording without prompt duplication.
+ */
+export function buildValuesUserPrompt(
+  facts: ExtractedJobFacts,
+  refusals: readonly string[]
+): string {
+  return buildUserPrompt(facts, refusals);
+}
+
 function buildUserPrompt(
   facts: ExtractedJobFacts,
   refusals: readonly string[]

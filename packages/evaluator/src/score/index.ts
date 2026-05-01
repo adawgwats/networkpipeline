@@ -12,6 +12,7 @@ export { buildSoftScoreSystemPrompt } from "./prompt.js";
 
 export {
   applyThreshold,
+  buildSoftScoreUserPrompt,
   softScore,
   type SoftScoreInput,
   type SoftScoreOutput

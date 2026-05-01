@@ -88,9 +88,18 @@ export async function extractJobFacts(
   };
 }
 
-function buildUserPrompt(input: ExtractJobFactsInput): string {
+/**
+ * Build the variable per-posting suffix for the extract stage. Exposed
+ * (rather than kept private) so the callback-pipeline state machine
+ * can reuse the exact same wording without prompt duplication.
+ */
+export function buildExtractUserPrompt(input: ExtractJobFactsInput): string {
   const header = input.sourceUrl
     ? `Source URL: ${input.sourceUrl}\n\n`
     : "";
   return `${header}Posting:\n\n${input.text.trim()}`;
+}
+
+function buildUserPrompt(input: ExtractJobFactsInput): string {
+  return buildExtractUserPrompt(input);
 }

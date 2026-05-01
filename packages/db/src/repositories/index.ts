@@ -19,3 +19,7 @@ export {
   DiscoveredPostingsRepository,
   type UpdateStatusOpts
 } from "./discovered_postings.js";
+export {
+  PendingEvaluationsRepository,
+  type PendingEvaluationUpdate
+} from "./pending_evaluations.js";

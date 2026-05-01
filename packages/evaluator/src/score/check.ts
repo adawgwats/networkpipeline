@@ -80,6 +80,15 @@ export async function softScore(
   return { result: applyThreshold(data, input.criteria), run };
 }
 
+/**
+ * Build the variable per-posting user prompt for soft_score. Exposed
+ * (rather than kept private) so the callback-pipeline state machine
+ * reuses the exact same wording without prompt duplication.
+ */
+export function buildSoftScoreUserPrompt(facts: ExtractedJobFacts): string {
+  return buildUserPrompt(facts);
+}
+
 function buildUserPrompt(facts: ExtractedJobFacts): string {
   return `# Posting facts (extracted, version: ${facts.extractor_version})
 

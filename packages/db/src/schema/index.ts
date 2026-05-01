@@ -41,6 +41,12 @@ export type {
   SourceId
 } from "./discovered_postings.js";
 
+export type {
+  PendingEvaluationInsert,
+  PendingEvaluationRow,
+  PendingEvaluationStatus
+} from "./pending_evaluations.js";
+
 /**
  * Idempotent schema-apply DDL. Runs at startup (or in test setup) to
  * ensure every table + index exists. SQLite's "IF NOT EXISTS" makes
@@ -186,7 +192,34 @@ export const APPLY_SCHEMA_DDL = [
   `CREATE INDEX IF NOT EXISTS idx_discovered_postings_source ON discovered_postings(source)`,
   `CREATE INDEX IF NOT EXISTS idx_discovered_postings_url ON discovered_postings(url)`,
   `CREATE INDEX IF NOT EXISTS idx_discovered_postings_external_ref ON discovered_postings(source, external_ref)`,
-  `CREATE INDEX IF NOT EXISTS idx_discovered_postings_input_hash ON discovered_postings(input_hash)`
+  `CREATE INDEX IF NOT EXISTS idx_discovered_postings_input_hash ON discovered_postings(input_hash)`,
+
+  // pending_evaluations — callback-pipeline state machine
+  `CREATE TABLE IF NOT EXISTS pending_evaluations (
+    id TEXT PRIMARY KEY,
+    posting_text TEXT NOT NULL,
+    source_url TEXT,
+    metadata_json TEXT,
+    criteria_version_id TEXT NOT NULL,
+    criteria_snapshot_json TEXT NOT NULL,
+    search_run_id TEXT,
+    discovered_posting_id TEXT,
+    mcp_invocation_id TEXT,
+    status TEXT NOT NULL,
+    current_call_id TEXT,
+    current_call_attempts INTEGER NOT NULL DEFAULT 0,
+    facts_json TEXT,
+    hard_gate_result_json TEXT,
+    values_result_json TEXT,
+    result_json TEXT,
+    error_message TEXT,
+    provider_runs_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_pending_evaluations_status ON pending_evaluations(status)`,
+  `CREATE INDEX IF NOT EXISTS idx_pending_evaluations_current_call_id ON pending_evaluations(current_call_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_pending_evaluations_search_run_id ON pending_evaluations(search_run_id)`
 ] as const;
 
 /**

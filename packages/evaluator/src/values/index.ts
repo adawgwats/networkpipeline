@@ -12,6 +12,7 @@ export { VALUES_SYSTEM_PROMPT } from "./prompt.js";
 
 export {
   applyThresholds,
+  buildValuesUserPrompt,
   valuesCheck,
   type ValuesCheckInput,
   type ValuesCheckOutput
