@@ -74,17 +74,18 @@ function expectReject(
 // ---------- pass-through ----------
 
 describe("preExtractionGateCheck — pass-through", () => {
-  it("passes with all 6 gates evaluated in canonical order when nothing trips", () => {
+  it("passes with all 7 gates evaluated in canonical order when nothing trips", () => {
     const result = preExtractionGateCheck(baseMetadata(), baseCriteria());
     assert.equal(result.pass, true);
     assert.deepEqual(result.gates_evaluated, [...PRE_EXTRACTION_GATES]);
-    assert.equal(result.gates_evaluated.length, 6);
+    assert.equal(result.gates_evaluated.length, 7);
   });
 
-  it("PRE_EXTRACTION_GATES contains exactly the 6 metadata-decidable gates in canonical (GATE_ORDER) order", () => {
+  it("PRE_EXTRACTION_GATES contains exactly the 7 metadata-decidable gates in canonical (GATE_ORDER) order", () => {
     assert.deepEqual([...PRE_EXTRACTION_GATES], [
       "must_not_contain_phrases",
       "company",
+      "role_kind",
       "role_seniority",
       "location_requirement",
       "location_allowed",
@@ -312,6 +313,144 @@ describe("preExtractionGateCheck — employment_type", () => {
   });
 });
 
+// ---------- role_kind ----------
+
+describe("preExtractionGateCheck — role_kind", () => {
+  it("rejects when an inferred role_kind is in the blocklist", () => {
+    const metadata = baseMetadata({
+      title: "Account Executive, Enterprise",
+      inferred_role_kinds: ["sales"]
+    });
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          {
+            kind: "role_kind",
+            any_of: ["sales", "marketing"],
+            reason: "Targeting engineering roles"
+          }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    const reject = expectReject(preExtractionGateCheck(metadata, criteria));
+    assert.equal(reject.gate, "role_kind");
+    assert.equal(reject.reason_code, "hard_gate:role_kind:sales");
+  });
+
+  it("passes when role_kind is in blocklist but a non-blocked kind also tags", () => {
+    // "Solutions Engineer" tags BOTH sales AND engineering. If the
+    // blocklist contains 'sales' we still reject — ANY blocked kind
+    // is enough. This is the intentional behavior from the spec.
+    // The complementary case: a posting ONLY tagged engineering should
+    // pass even when other kinds (sales) are blocked.
+    const metadata = baseMetadata({
+      title: "Software Engineer",
+      inferred_role_kinds: ["engineering"]
+    });
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          {
+            kind: "role_kind",
+            any_of: ["sales", "marketing", "recruiting"],
+            reason: "engineering only"
+          }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    assert.equal(preExtractionGateCheck(metadata, criteria).pass, true);
+  });
+
+  it("rejects when ANY tag is blocked (Solutions Engineer with sales blocked)", () => {
+    const metadata = baseMetadata({
+      title: "Solutions Engineer",
+      inferred_role_kinds: ["engineering", "sales"]
+    });
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          {
+            kind: "role_kind",
+            any_of: ["sales"],
+            reason: "Targeting engineering"
+          }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    const reject = expectReject(preExtractionGateCheck(metadata, criteria));
+    assert.equal(reject.gate, "role_kind");
+  });
+
+  it("passes when overlapping tags are not blocked (Senior Security Engineer with only sales blocked)", () => {
+    const metadata = baseMetadata({
+      title: "Senior Security Engineer",
+      inferred_role_kinds: ["engineering", "security"]
+    });
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          {
+            kind: "role_kind",
+            any_of: ["sales"],
+            reason: "Targeting engineering"
+          }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    assert.equal(preExtractionGateCheck(metadata, criteria).pass, true);
+  });
+
+  it("defers when inferred_role_kinds is empty", () => {
+    const metadata = baseMetadata({ inferred_role_kinds: [] });
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          {
+            kind: "role_kind",
+            any_of: ["sales"],
+            reason: "test"
+          }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    assert.equal(preExtractionGateCheck(metadata, criteria).pass, true);
+  });
+
+  it("defers when inferred_role_kinds contains only 'other'", () => {
+    const metadata = baseMetadata({ inferred_role_kinds: ["other"] });
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          {
+            kind: "role_kind",
+            any_of: ["sales"],
+            reason: "test"
+          }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    assert.equal(preExtractionGateCheck(metadata, criteria).pass, true);
+  });
+
+  it("does nothing when criteria has no role_kind blocklist", () => {
+    const metadata = baseMetadata({ inferred_role_kinds: ["sales"] });
+    const criteria = baseCriteria(); // empty must_not_have
+    assert.equal(preExtractionGateCheck(metadata, criteria).pass, true);
+  });
+});
+
 // ---------- role_seniority ----------
 
 describe("preExtractionGateCheck — role_seniority", () => {
@@ -422,6 +561,7 @@ describe("preExtractionGateCheck — execution order", () => {
     assert.deepEqual(reject.gates_evaluated, [
       "must_not_contain_phrases",
       "company",
+      "role_kind",
       "role_seniority",
       "location_requirement",
       "location_allowed"

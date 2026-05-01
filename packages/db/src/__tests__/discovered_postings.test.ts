@@ -20,6 +20,8 @@ function basePosting(
     status: "queued",
     pre_filter_reason_code: null,
     job_evaluation_id: null,
+    cached_job_evaluation_id: null,
+    input_hash: null,
     discovered_at: "2026-01-01T00:00:00Z",
     last_seen_at: "2026-01-01T00:00:00Z",
     ...overrides

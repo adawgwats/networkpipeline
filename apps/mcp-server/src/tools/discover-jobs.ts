@@ -50,7 +50,14 @@ const sourceQuerySchema: z.ZodType<SourceQuery> = z.union([
 const inputSchema = z
   .object({
     saved_search_id: z.string().min(1).optional(),
-    ad_hoc_queries: z.array(sourceQuerySchema).optional()
+    ad_hoc_queries: z.array(sourceQuerySchema).optional(),
+    /**
+     * Optional per-search cap. When omitted with a saved_search_id,
+     * inherits the SavedSearch.max_results column. When omitted on
+     * the ad-hoc path, falls back to connector-side
+     * DEFAULT_MAX_RESULTS (50).
+     */
+    max_results: z.number().int().positive().max(500).optional()
   })
   .strict()
   .refine(
@@ -71,6 +78,7 @@ export type DiscoverJobsOutput = {
     inserted: number;
     pre_filter_rejected: number;
     duplicates_skipped: number;
+    cached_facts_reused: number;
     passed_to_eval: number;
     ready_for_eval_ids: string[];
   };
@@ -104,21 +112,26 @@ export function makeDiscoverJobsTool(
       "Kick off a search run by either a saved_search_id or ad-hoc queries. Returns direct-fetch results and any Claude-executed instructions for instruction-based sources (Indeed, recruiter_email, career_page).",
     inputSchema,
     handler: async (input) => {
-      const { savedSearchId, queries } = resolveQueries(runtime, input);
+      const { savedSearchId, queries, maxResults } = resolveQueries(
+        runtime,
+        input
+      );
       const runId = randomUUID();
 
       const start = await startDiscovery(runtime.repositories, {
         savedSearchId,
         runId,
         queries,
-        connectorById
+        connectorById,
+        maxResults
       });
 
       const recorded = recordDiscoveredPostings(runtime.repositories, {
         savedSearchId,
         runId,
         postings: start.direct_postings,
-        criteria: runtime.criteria
+        criteria: runtime.criteria,
+        criteriaVersionId: runtime.criteriaVersionId
       });
 
       return {
@@ -127,6 +140,7 @@ export function makeDiscoverJobsTool(
           inserted: recorded.inserted_postings,
           pre_filter_rejected: recorded.pre_filter_rejected,
           duplicates_skipped: recorded.duplicates_skipped,
+          cached_facts_reused: recorded.cached_facts_reused,
           passed_to_eval: recorded.passed_to_eval,
           ready_for_eval_ids: recorded.ready_for_eval_ids
         },
@@ -152,7 +166,11 @@ export function makeDiscoverJobsTool(
 function resolveQueries(
   runtime: Runtime,
   input: Input
-): { savedSearchId: string; queries: SourceQuery[] } {
+): {
+  savedSearchId: string;
+  queries: SourceQuery[];
+  maxResults: number | undefined;
+} {
   if (input.saved_search_id) {
     const row = runtime.repositories.savedSearches.findById(
       input.saved_search_id
@@ -170,11 +188,14 @@ function resolveQueries(
         }`
       );
     }
-    return { savedSearchId: row.id, queries };
+    // Explicit input override > SavedSearch.max_results > undefined.
+    const maxResults = input.max_results ?? row.max_results ?? undefined;
+    return { savedSearchId: row.id, queries, maxResults };
   }
   // Ad-hoc — synthesize a parent id to keep FK shape clean.
   return {
     savedSearchId: `ad_hoc:${randomUUID()}`,
-    queries: input.ad_hoc_queries ?? []
+    queries: input.ad_hoc_queries ?? [],
+    maxResults: input.max_results
   };
 }

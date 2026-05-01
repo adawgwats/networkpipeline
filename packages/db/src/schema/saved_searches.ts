@@ -36,6 +36,13 @@ export type SavedSearchRow = {
   /** Optional relative path or template id for a criteria overlay. */
   criteria_overlay_path: string | null;
   cadence: Cadence;
+  /**
+   * Optional per-search result cap. When non-null, each connector
+   * truncates its result list to at most this many postings (default
+   * 50, max 500). Drives the cost-engineering "don't burn 30 minutes
+   * on a 443-posting board" gate.
+   */
+  max_results: number | null;
   /** ISO-8601. */
   created_at: string;
   /** ISO-8601. */

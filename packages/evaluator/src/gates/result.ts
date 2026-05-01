@@ -10,6 +10,7 @@
  *   - hard_gate:must_not_contain_phrases:active security clearance required
  *   - hard_gate:company:Anduril
  *   - hard_gate:industry:autonomous_lethal_systems
+ *   - hard_gate:role_kind:sales
  *   - hard_gate:required_clearance:secret
  *   - hard_gate:role_seniority:staff
  *   - hard_gate:location_requirement:Denver, CO
@@ -22,6 +23,7 @@ export type GateName =
   | "must_not_contain_phrases"
   | "company"
   | "industry"
+  | "role_kind"
   | "required_clearance"
   | "role_seniority"
   | "location_requirement"
@@ -33,16 +35,17 @@ export type GateName =
 /**
  * Stable execution order. Cheaper / more decisive gates run first.
  *
- * 1. must_not_contain_phrases — pure substring match, fastest
- * 2. company                  — exact company-name match
- * 3. industry                 — controlled-vocabulary tag match
- * 4. required_clearance       — clearance enum match
- * 5. role_seniority           — band overlap
- * 6. location_requirement     — onsite-location list check
- * 7. work_authorization       — sponsorship-status check
- * 8. location_allowed         — profile.primary_locations match
- * 9. employment_type          — type membership
- * 10. years_experience        — numeric requirement vs profile YOE
+ * 1.  must_not_contain_phrases — pure substring match, fastest
+ * 2.  company                  — exact company-name match
+ * 3.  industry                 — controlled-vocabulary tag match
+ * 4.  role_kind                — title-classifier overlap (deterministic)
+ * 5.  required_clearance       — clearance enum match
+ * 6.  role_seniority           — band overlap
+ * 7.  location_requirement     — onsite-location list check
+ * 8.  work_authorization       — sponsorship-status check
+ * 9.  location_allowed         — profile.primary_locations match
+ * 10. employment_type          — type membership
+ * 11. years_experience         — numeric requirement vs profile YOE
  *
  * Pipeline short-circuits on first failure.
  */
@@ -50,6 +53,7 @@ export const GATE_ORDER: readonly GateName[] = [
   "must_not_contain_phrases",
   "company",
   "industry",
+  "role_kind",
   "required_clearance",
   "role_seniority",
   "location_requirement",
@@ -61,7 +65,7 @@ export const GATE_ORDER: readonly GateName[] = [
 
 export type GatePassResult = {
   pass: true;
-  /** All gates that ran (always all 10 in order on a pass). */
+  /** All gates that ran (always all 11 in order on a pass). */
   gates_evaluated: GateName[];
 };
 

@@ -4,7 +4,11 @@ import {
   type ExtractedJobFacts,
   type ExtractJobFactsInput
 } from "../extract/index.js";
-import { hardGateCheck, type GateResult } from "../gates/index.js";
+import {
+  hardGateCheck,
+  type DiscoveredPostingMetadata,
+  type GateResult
+} from "../gates/index.js";
 import type { JsonOutputProvider, ProviderRun } from "../provider/types.js";
 import { softScore, type SoftScoreResult } from "../score/index.js";
 import { valuesCheck, type ValuesCheckResult } from "../values/index.js";
@@ -65,7 +69,8 @@ export type EvaluationResult = {
 export async function evaluateJob(
   provider: JsonOutputProvider,
   input: ExtractJobFactsInput,
-  criteria: CandidateCriteria
+  criteria: CandidateCriteria,
+  metadata?: DiscoveredPostingMetadata
 ): Promise<EvaluationResult> {
   const provider_runs: ProviderRun[] = [];
   const stages_run: EvaluationStage[] = [];
@@ -83,8 +88,12 @@ export async function evaluateJob(
   } as const;
 
   // ── Stage 2: hard gates (pure code) ───────────────────────────────
+  // Forward `metadata` so the deterministic role_kind gate can run
+  // post-extraction with the same title-classifier values used by
+  // pre-extraction. When metadata is absent (e.g. evaluate_job called
+  // directly with a manual URL), the role_kind gate defers.
   stages_run.push("hard_gate");
-  const gateResult = hardGateCheck(extracted.facts, criteria);
+  const gateResult = hardGateCheck(extracted.facts, criteria, metadata);
   if (!gateResult.pass) {
     return {
       verdict: "rejected",
@@ -166,5 +175,158 @@ export async function evaluateJob(
     soft_score_result: scoreOut.result,
     provider_runs,
     ...baseShape
+  };
+}
+
+/**
+ * evaluateJobWithCachedFacts — same as `evaluateJob` but skips the
+ * extract stage. Used when an earlier evaluation against a different
+ * criteria version produced compatible `facts_json` (same posting body,
+ * same extractor_version) and we just want to re-run the
+ * gates+values+score stages against the current criteria.
+ *
+ * Cost contract: the extract LLM call is replaced with a synthetic
+ * `provider="cached"` ProviderRun (zero tokens, zero latency, zero
+ * cost) so run accounting stays consistent — `provider_runs.length`
+ * still tracks "stages with provider involvement", just with a $0
+ * placeholder for extract.
+ *
+ * Caller responsibilities:
+ *  - Compute `inputHash` matching `extractJobFacts(...)` so the
+ *    returned EvaluationResult's `input_hash` is correct.
+ *  - Pass the source `extractor_version` so the row's column matches.
+ *  - Pass `metadata` if the role_kind gate should run; otherwise the
+ *    gate defers (consistent with the manual-paste path).
+ */
+export async function evaluateJobWithCachedFacts(
+  provider: JsonOutputProvider,
+  args: {
+    facts: ExtractedJobFacts;
+    inputHash: string;
+    extractorVersion: string;
+  },
+  criteria: CandidateCriteria,
+  metadata?: DiscoveredPostingMetadata
+): Promise<EvaluationResult> {
+  const provider_runs: ProviderRun[] = [];
+  const stages_run: EvaluationStage[] = [];
+
+  // ── Stage 1: extract (CACHED — no provider call) ──────────────────
+  // Synthetic ProviderRun keeps the per-stage accounting shape stable.
+  // We use provider="cached" as a sentinel that orchestrators must
+  // skip when summing cost (mirrors the existing "skipped" handling).
+  stages_run.push("extract");
+  provider_runs.push(makeCachedExtractProviderRun(args.extractorVersion));
+
+  const facts = args.facts;
+  const baseShape = {
+    facts,
+    input_hash: args.inputHash,
+    extractor_version: args.extractorVersion,
+    criteria_version: criteria.version
+  } as const;
+
+  // ── Stage 2: hard gates (pure code) ───────────────────────────────
+  stages_run.push("hard_gate");
+  const gateResult = hardGateCheck(facts, criteria, metadata);
+  if (!gateResult.pass) {
+    return {
+      verdict: "rejected",
+      reason_code: gateResult.reason_code,
+      short_circuited_at_stage: "hard_gate",
+      stages_run,
+      hard_gate_result: gateResult,
+      values_result: null,
+      soft_score_result: null,
+      provider_runs,
+      ...baseShape
+    };
+  }
+
+  // ── Stage 2b: values_check ─────────────────────────────────────────
+  stages_run.push("values_check");
+  const valuesOut = await valuesCheck(provider, { facts, criteria });
+  provider_runs.push(valuesOut.run);
+
+  if (valuesOut.result.decision === "reject") {
+    return {
+      verdict: "rejected",
+      reason_code: valuesOut.result.reason_code,
+      short_circuited_at_stage: "values_check",
+      stages_run,
+      hard_gate_result: gateResult,
+      values_result: valuesOut.result,
+      soft_score_result: null,
+      provider_runs,
+      ...baseShape
+    };
+  }
+  if (valuesOut.result.decision === "needs_review") {
+    return {
+      verdict: "needs_review",
+      reason_code: "values:needs_review",
+      short_circuited_at_stage: "values_check",
+      stages_run,
+      hard_gate_result: gateResult,
+      values_result: valuesOut.result,
+      soft_score_result: null,
+      provider_runs,
+      ...baseShape
+    };
+  }
+
+  // ── Stage 3: soft_score ───────────────────────────────────────────
+  stages_run.push("soft_score");
+  const scoreOut = await softScore(provider, { facts, criteria });
+  provider_runs.push(scoreOut.run);
+
+  if (scoreOut.result.below_threshold) {
+    return {
+      verdict: "below_threshold",
+      reason_code: scoreOut.result.reason_code,
+      short_circuited_at_stage: "soft_score",
+      stages_run,
+      hard_gate_result: gateResult,
+      values_result: valuesOut.result,
+      soft_score_result: scoreOut.result,
+      provider_runs,
+      ...baseShape
+    };
+  }
+
+  return {
+    verdict: "accepted",
+    reason_code: "",
+    short_circuited_at_stage: null,
+    stages_run,
+    hard_gate_result: gateResult,
+    values_result: valuesOut.result,
+    soft_score_result: scoreOut.result,
+    provider_runs,
+    ...baseShape
+  };
+}
+
+/**
+ * Synthetic ProviderRun for the cached-extract code path. Zero tokens,
+ * zero cost, `provider="cached"` so orchestrator cost accumulation can
+ * filter it out the same way it filters `provider="skipped"`.
+ */
+function makeCachedExtractProviderRun(
+  extractorVersion: string
+): ProviderRun {
+  return {
+    provider: "cached",
+    model: "n/a",
+    prompt_id: extractorVersion,
+    started_at: new Date().toISOString(),
+    latency_ms: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_tokens: 0,
+    cache_read_tokens: 0,
+    cost_usd_cents: 0,
+    stop_reason: "cached",
+    retries: 0
   };
 }

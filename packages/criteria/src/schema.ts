@@ -17,6 +17,69 @@ export const seniorityBandSchema = z.enum([
 ]);
 export type SeniorityBand = z.infer<typeof seniorityBandSchema>;
 
+/**
+ * Coarse role-kind taxonomy used by the deterministic title-classifier
+ * pre-extraction filter (see packages/discovery/src/connector/role_kind.ts).
+ *
+ * Lives in @networkpipeline/criteria — alongside SeniorityBand — so both
+ * `discovery` (for inference) and `evaluator` (for gating) can import it
+ * without forcing a `discovery → evaluator → discovery` cycle.
+ *
+ * Multi-tag is intentional: a "Solutions Engineer" is both `engineering`
+ * and `sales`. The user's blocklist controls which tags reject; the
+ * classifier may emit several.
+ *
+ * `"other"` means "title didn't match any kind". Pre-extraction treats
+ * an `["other"]` (or empty) result as a defer, NOT a reject — same
+ * defer-on-ambiguity contract as role_seniority.
+ */
+export const roleKindSchema = z.enum([
+  "engineering",
+  "research",
+  "ml",
+  "infrastructure",
+  "security",
+  "design",
+  "product",
+  "sales",
+  "customer_success",
+  "marketing",
+  "recruiting",
+  "people_ops",
+  "finance",
+  "legal",
+  "operations",
+  "support",
+  "data",
+  "devrel",
+  "policy",
+  "other"
+]);
+export type RoleKind = z.infer<typeof roleKindSchema>;
+
+export const ALL_ROLE_KINDS: readonly RoleKind[] = [
+  "engineering",
+  "research",
+  "ml",
+  "infrastructure",
+  "security",
+  "design",
+  "product",
+  "sales",
+  "customer_success",
+  "marketing",
+  "recruiting",
+  "people_ops",
+  "finance",
+  "legal",
+  "operations",
+  "support",
+  "data",
+  "devrel",
+  "policy",
+  "other"
+] as const;
+
 export const workAuthorizationSchema = z.enum([
   "us_citizen",
   "us_citizen_or_permanent_resident",
@@ -108,12 +171,19 @@ const mustNotHaveLocationRequirement = z.object({
   reason: z.string().min(1)
 });
 
+const mustNotHaveRoleKind = z.object({
+  kind: z.literal("role_kind"),
+  any_of: z.array(roleKindSchema).min(1),
+  reason: z.string().min(1)
+});
+
 export const mustNotHaveConditionSchema = z.discriminatedUnion("kind", [
   mustNotHaveRequiredClearance,
   mustNotHaveIndustry,
   mustNotHaveCompany,
   mustNotHaveRoleSeniority,
-  mustNotHaveLocationRequirement
+  mustNotHaveLocationRequirement,
+  mustNotHaveRoleKind
 ]);
 export type MustNotHaveCondition = z.infer<typeof mustNotHaveConditionSchema>;
 

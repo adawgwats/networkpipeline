@@ -14,6 +14,7 @@ export { EXTRACT_PROMPT_ID, EXTRACT_SYSTEM_PROMPT } from "./prompt.js";
 
 export {
   extractJobFacts,
+  hashPostingText,
   type ExtractJobFactsInput,
   type ExtractJobFactsResult
 } from "./extract.js";

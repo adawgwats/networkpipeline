@@ -1,5 +1,6 @@
 import type { CandidateCriteria } from "@networkpipeline/criteria";
 import type { ExtractedJobFacts } from "../extract/schema.js";
+import type { DiscoveredPostingMetadata } from "./metadata.js";
 import {
   buildReasonCode,
   GATE_ORDER,
@@ -13,18 +14,25 @@ import {
  *
  * Pure code. No LLM. Same inputs always produce the same output.
  *
- * Runs all 10 gates in the order documented in §6.4, short-circuiting on
+ * Runs all 11 gates in the order documented in §6.4, short-circuiting on
  * the first failure with a stable reason code from §11.
+ *
+ * The optional `metadata` parameter forwards title-classifier values
+ * (notably `inferred_role_kinds`) from the discovery layer. When
+ * provided, the `role_kind` gate uses those tags. When absent (e.g.
+ * the manual-paste path with no title), the gate defers — same
+ * defer-on-ambiguity contract as role_seniority.
  */
 export function hardGateCheck(
   facts: ExtractedJobFacts,
-  criteria: CandidateCriteria
+  criteria: CandidateCriteria,
+  metadata?: DiscoveredPostingMetadata
 ): GateResult {
   const evaluated: GateName[] = [];
 
   for (const gate of GATE_ORDER) {
     evaluated.push(gate);
-    const verdict = runGate(gate, facts, criteria);
+    const verdict = runGate(gate, facts, criteria, metadata);
     if (verdict !== null) {
       return { ...verdict, gates_evaluated: evaluated };
     }
@@ -38,7 +46,8 @@ type GateFailure = Omit<GateRejectResult, "gates_evaluated">;
 function runGate(
   gate: GateName,
   facts: ExtractedJobFacts,
-  criteria: CandidateCriteria
+  criteria: CandidateCriteria,
+  metadata: DiscoveredPostingMetadata | undefined
 ): GateFailure | null {
   switch (gate) {
     case "must_not_contain_phrases":
@@ -47,6 +56,8 @@ function runGate(
       return checkCompanyBlocklist(facts, criteria);
     case "industry":
       return checkIndustryBlocklist(facts, criteria);
+    case "role_kind":
+      return checkRoleKind(metadata, criteria);
     case "required_clearance":
       return checkRequiredClearance(facts, criteria);
     case "role_seniority":
@@ -66,6 +77,46 @@ function runGate(
       throw new Error(`unhandled gate: ${String(_exhaustive)}`);
     }
   }
+}
+
+function checkRoleKind(
+  metadata: DiscoveredPostingMetadata | undefined,
+  criteria: CandidateCriteria
+): GateFailure | null {
+  const conditions = criteria.hard_gates.must_not_have.filter(
+    (c) => c.kind === "role_kind"
+  );
+  if (conditions.length === 0) return null;
+
+  // Defer when no metadata (e.g., manual_paste path, evaluator unit
+  // tests calling hardGateCheck directly without a discovery upstream)
+  // or when the title-classifier returned only "other"/empty.
+  const kinds = metadata?.inferred_role_kinds ?? [];
+  if (kinds.length === 0) return null;
+  const onlyOther = kinds.every((k) => k === "other");
+  if (onlyOther) return null;
+
+  for (const cond of conditions) {
+    const blocked = new Set(cond.any_of);
+    const matched = kinds.find((k) => blocked.has(k));
+    if (matched !== undefined) {
+      return {
+        pass: false,
+        gate: "role_kind",
+        reason_code: buildReasonCode("role_kind", matched),
+        message: `Posting role_kind tags [${kinds.join(
+          ", "
+        )}] overlap the blocklist [${cond.any_of.join(", ")}] (matched: ${matched}). Reason: ${cond.reason}`,
+        details: {
+          posting_role_kinds: kinds,
+          blocked_kinds: cond.any_of,
+          matched_kind: matched,
+          reason: cond.reason
+        }
+      };
+    }
+  }
+  return null;
 }
 
 // ---------- gate implementations ----------

@@ -36,6 +36,7 @@ export type RecordDiscoveredPostingsOutput = {
   inserted_postings: number;
   pre_filter_rejected: number;
   duplicates_skipped: number;
+  cached_facts_reused: number;
   passed_to_eval: number;
   ready_for_eval_ids: string[];
 };
@@ -86,12 +87,20 @@ export function makeRecordDiscoveredPostingsTool(
         );
       }
 
-      const postings = connector.recordResults(input.payload);
+      // Look up SavedSearch.max_results so the connector enforces the
+      // cap on its side too (defense in depth — Claude may have
+      // ignored the discoverInstruction's `limit` arg and overshot).
+      const ss = runtime.repositories.savedSearches.findById(
+        run.saved_search_id
+      );
+      const maxResults = ss?.max_results ?? undefined;
+      const postings = connector.recordResults(input.payload, maxResults);
       const recorded = recordDiscoveredPostings(runtime.repositories, {
         savedSearchId: run.saved_search_id,
         runId: run.id,
         postings,
-        criteria: runtime.criteria
+        criteria: runtime.criteria,
+        criteriaVersionId: runtime.criteriaVersionId
       });
 
       return {
@@ -99,6 +108,7 @@ export function makeRecordDiscoveredPostingsTool(
         inserted_postings: recorded.inserted_postings,
         pre_filter_rejected: recorded.pre_filter_rejected,
         duplicates_skipped: recorded.duplicates_skipped,
+        cached_facts_reused: recorded.cached_facts_reused,
         passed_to_eval: recorded.passed_to_eval,
         ready_for_eval_ids: recorded.ready_for_eval_ids
       };

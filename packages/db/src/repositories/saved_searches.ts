@@ -7,8 +7,8 @@ import type {
 const INSERT_SQL = `
 INSERT INTO saved_searches (
   id, label, sources_json, queries_json, criteria_overlay_path,
-  cadence, created_at, updated_at, last_run_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  cadence, max_results, created_at, updated_at, last_run_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const FIND_BY_ID_SQL = `SELECT * FROM saved_searches WHERE id = ?`;
@@ -51,6 +51,7 @@ export class SavedSearchesRepository {
       row.queries_json,
       row.criteria_overlay_path,
       row.cadence,
+      row.max_results,
       row.created_at,
       row.updated_at,
       row.last_run_at

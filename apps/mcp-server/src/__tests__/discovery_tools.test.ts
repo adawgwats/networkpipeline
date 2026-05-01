@@ -380,6 +380,8 @@ describe("run_saved_search — greenhouse direct path", () => {
         status: "queued",
         pre_filter_reason_code: null,
         job_evaluation_id: null,
+        cached_job_evaluation_id: null,
+        input_hash: null,
         discovered_at: "2026-04-29T10:00:00Z",
         last_seen_at: "2026-04-29T10:00:00Z"
       });
@@ -406,6 +408,151 @@ describe("run_saved_search — greenhouse direct path", () => {
 
       // Suppress unused-variable lint without affecting wire test.
       assert.equal(typeof fetchImpl, "function");
+    } finally {
+      conn.close();
+    }
+  });
+});
+
+describe("run_saved_search — max_results cap (manual_paste)", () => {
+  it("caps the number of evaluated postings at SavedSearch.max_results", async () => {
+    const conn = openDb({ path: ":memory:" });
+    try {
+      // 5 evaluator calls expected (cap of 5 over 50 URLs).
+      const provider = makeAcceptingProvider(5);
+      const runtime = makeRuntime(conn, provider);
+      const registry = buildRegistry(runtime);
+
+      // Create with 50 URLs but max_results=5.
+      const created = await registry.dispatch(
+        "create_saved_search",
+        {
+          label: "capped",
+          sources_json: JSON.stringify(["manual_paste"]),
+          queries_json: JSON.stringify([
+            {
+              source: "manual_paste",
+              urls: Array.from(
+                { length: 50 },
+                (_, i) => `https://example.com/job/${i}`
+              )
+            }
+          ]),
+          max_results: 5
+        },
+        { invocationId: "inv-create" }
+      );
+      assert.equal(created.ok, true);
+      if (!created.ok) return;
+      const ssId = (created.output as { id: string }).id;
+
+      const run = await registry.dispatch(
+        "run_saved_search",
+        { saved_search_id: ssId },
+        { invocationId: "inv-run" }
+      );
+      assert.equal(run.ok, true);
+      if (!run.ok) return;
+      const result = run.output as {
+        search_run_id: string;
+        digest: { evaluated: number };
+      };
+      // Cap: only 5 of the 50 URLs even reach evaluation.
+      assert.equal(result.digest.evaluated, 5);
+
+      const rows = runtime.repositories.discoveredPostings.listBySearchRun(
+        result.search_run_id
+      );
+      assert.equal(rows.length, 5);
+    } finally {
+      conn.close();
+    }
+  });
+});
+
+describe("run_saved_search — facts cache across criteria versions", () => {
+  it("second run with a different criteria version reuses cached facts (skips extract LLM call)", async () => {
+    const conn = openDb({ path: ":memory:" });
+    try {
+      // First run needs 1 extract response. Second run skips extract,
+      // values is empty → short-circuits, but we still need a soft-score
+      // response on each run since the runtime's default criteria has
+      // empty refusals & empty soft preferences. With empty soft prefs,
+      // softScore short-circuits too — so we expect ZERO provider calls
+      // on the second run. Provide exactly 1 response (for run 1's
+      // extract).
+      const provider = makeAcceptingProvider(1);
+      const runtime = makeRuntime(conn, provider);
+      const registry = buildRegistry(runtime);
+
+      // Create a saved_search with one URL.
+      const created = await registry.dispatch(
+        "create_saved_search",
+        {
+          label: "cache-test",
+          sources_json: JSON.stringify(["manual_paste"]),
+          queries_json: JSON.stringify([
+            {
+              source: "manual_paste",
+              urls: ["https://example.com/job/cache-1"]
+            }
+          ])
+        },
+        { invocationId: "inv-c" }
+      );
+      assert.equal(created.ok, true);
+      if (!created.ok) return;
+      const ssId = (created.output as { id: string }).id;
+
+      // Run 1 — extract LLM call happens.
+      const r1 = await registry.dispatch(
+        "run_saved_search",
+        { saved_search_id: ssId },
+        { invocationId: "inv-r1" }
+      );
+      assert.equal(r1.ok, true);
+      if (!r1.ok) return;
+      const out1 = r1.output as {
+        search_run_id: string;
+        digest: { evaluated: number };
+      };
+      assert.equal(out1.digest.evaluated, 1);
+
+      // Provider has consumed its single extract response. Second run
+      // must NOT need a new extract response — the cache reuses the
+      // facts persisted from run 1. We swap the criteriaVersionId to
+      // simulate "criteria changed since run 1".
+      runtime.criteriaVersionId = "different-version";
+
+      // Run 2 — same URL, different criteria version → reuse facts.
+      const r2 = await registry.dispatch(
+        "run_saved_search",
+        { saved_search_id: ssId },
+        { invocationId: "inv-r2" }
+      );
+      assert.equal(r2.ok, true);
+      if (!r2.ok) return;
+      const out2 = r2.output as {
+        search_run_id: string;
+        digest: { evaluated: number };
+      };
+      assert.equal(out2.digest.evaluated, 1);
+
+      // The second-run posting should have cached_job_evaluation_id set.
+      const rows = runtime.repositories.discoveredPostings.listBySearchRun(
+        out2.search_run_id
+      );
+      assert.equal(rows.length, 1);
+      assert.ok(
+        rows[0].cached_job_evaluation_id,
+        "cached_job_evaluation_id should be set"
+      );
+
+      // Confirm we created TWO job_evaluations (one per criteria_version_id).
+      const evals = runtime.repositories.jobEvaluations.listByCriteriaVersion(
+        runtime.criteriaVersionId
+      );
+      assert.equal(evals.length, 1);
     } finally {
       conn.close();
     }

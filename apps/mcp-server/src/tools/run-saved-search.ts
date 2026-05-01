@@ -77,20 +77,25 @@ export function makeRunSavedSearchTool(
 
       const runId = randomUUID();
 
-      // Fan out.
+      // Fan out. Pass through the saved search's max_results cap when
+      // present; connectors fall back to DEFAULT_MAX_RESULTS otherwise.
       const start = await startDiscovery(runtime.repositories, {
         savedSearchId: ss.id,
         runId,
         queries,
-        connectorById
+        connectorById,
+        maxResults: ss.max_results ?? undefined
       });
 
-      // Persist + pre-filter direct results.
+      // Persist + pre-filter direct results. Pass criteriaVersionId
+      // so the cache lookup can distinguish "same-criteria duplicate"
+      // (skip eval entirely) from "different-criteria, reuse facts".
       const recorded = recordDiscoveredPostings(runtime.repositories, {
         savedSearchId: ss.id,
         runId,
         postings: start.direct_postings,
-        criteria: runtime.criteria
+        criteria: runtime.criteria,
+        criteriaVersionId: runtime.criteriaVersionId
       });
 
       // Evaluate the direct survivors immediately.

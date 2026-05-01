@@ -1,9 +1,10 @@
 import { canonicalizeUrl } from "../dedup.js";
-import type {
-  DirectFetchResult,
-  DirectFetchSourceConnector,
-  NormalizedDiscoveredPosting,
-  SourceQuery
+import {
+  DEFAULT_MAX_RESULTS,
+  type DirectFetchResult,
+  type DirectFetchSourceConnector,
+  type NormalizedDiscoveredPosting,
+  type SourceQuery
 } from "../connector/types.js";
 
 /**
@@ -26,7 +27,10 @@ export function manualPasteConnector(): DirectFetchSourceConnector {
     description() {
       return "Manual-paste connector. Synthesizes discovered_postings rows from user-supplied URLs without fetching them — Claude pulls bodies via WebFetch during evaluation.";
     },
-    async discoverDirect(query: SourceQuery): Promise<DirectFetchResult> {
+    async discoverDirect(
+      query: SourceQuery,
+      maxResults: number = DEFAULT_MAX_RESULTS
+    ): Promise<DirectFetchResult> {
       if (query.source !== "manual_paste") {
         return {
           kind: "direct_fetch_result",
@@ -64,7 +68,7 @@ export function manualPasteConnector(): DirectFetchSourceConnector {
       return {
         kind: "direct_fetch_result",
         source: "manual_paste",
-        postings,
+        postings: postings.slice(0, maxResults),
         errors
       };
     }
@@ -83,6 +87,8 @@ function buildManualPastePosting(url: string): NormalizedDiscoveredPosting {
     is_onsite_required: null,
     employment_type: null,
     inferred_seniority_signals: [],
+    // Manual paste has no title beyond the placeholder; defer.
+    inferred_role_kinds: ["other"],
     raw_metadata: { url }
   };
 }

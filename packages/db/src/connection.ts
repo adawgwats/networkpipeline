@@ -2,7 +2,10 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { APPLY_SCHEMA_DDL } from "./schema/index.js";
+import {
+  ADDITIVE_COLUMN_MIGRATIONS,
+  APPLY_SCHEMA_DDL
+} from "./schema/index.js";
 
 /**
  * AppDatabase is the typed wrapper around node:sqlite's DatabaseSync.
@@ -81,9 +84,14 @@ export function openDb(options: OpenDbOptions = {}): Connection {
 }
 
 /**
- * Apply every DDL statement from `APPLY_SCHEMA_DDL`. Each statement is
- * idempotent (CREATE TABLE/INDEX IF NOT EXISTS), so this can be called
- * repeatedly without harm.
+ * Apply every DDL statement from `APPLY_SCHEMA_DDL`, then attempt
+ * `ADDITIVE_COLUMN_MIGRATIONS` (each wrapped in a try/catch since
+ * SQLite has no `IF NOT EXISTS` on ALTER TABLE).
+ *
+ * The CREATE TABLE block is idempotent. The ALTER block is
+ * idempotent-with-errors: when a column already exists, SQLite throws
+ * "duplicate column name"; we recognize that case and swallow it.
+ * Anything else (a real schema bug) bubbles up.
  */
 export function applySchema(db: AppDatabase): void {
   db.exec("BEGIN");
@@ -95,6 +103,20 @@ export function applySchema(db: AppDatabase): void {
   } catch (err) {
     db.exec("ROLLBACK");
     throw err;
+  }
+  // Migrations run OUTSIDE the transaction so a failed ALTER doesn't
+  // roll back the CREATE TABLEs. Each migration is independent.
+  for (const stmt of ADDITIVE_COLUMN_MIGRATIONS) {
+    try {
+      db.exec(stmt);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/duplicate column name/i.test(msg)) {
+        // Column already exists from a prior boot or fresh CREATE TABLE.
+        continue;
+      }
+      throw err;
+    }
   }
 }
 

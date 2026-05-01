@@ -25,7 +25,7 @@ describe("indeedConnector", () => {
     assert.equal(wi.tool, "mcp__claude_ai_Indeed__search_jobs");
     assert.equal(wi.args.query, "ML engineer");
     assert.equal(wi.args.location, "Remote");
-    assert.equal(wi.args.limit, 25);
+    assert.equal(wi.args.limit, 50);
   });
 
   it("omits location arg when not provided", () => {
@@ -39,15 +39,43 @@ describe("indeedConnector", () => {
     assert.equal("location" in wi.args, false);
   });
 
-  it("respects custom limit", () => {
-    const c = indeedConnector({ limit: 50 });
+  it("respects factory-default limit", () => {
+    const c = indeedConnector({ limit: 100 });
     const inst = c.discoverInstruction(
       { source: "indeed", query: "x" },
       "run-1"
     );
     const wi = inst.work_items[0];
     if (wi.kind !== "claude_mcp_tool") throw new Error("unreachable");
-    assert.equal(wi.args.limit, 50);
+    assert.equal(wi.args.limit, 100);
+  });
+
+  it("per-call maxResults arg overrides the factory limit", () => {
+    const c = indeedConnector({ limit: 100 });
+    const inst = c.discoverInstruction(
+      { source: "indeed", query: "x" },
+      "run-1",
+      10 // SavedSearch.max_results=10 forwarded
+    );
+    const wi = inst.work_items[0];
+    if (wi.kind !== "claude_mcp_tool") throw new Error("unreachable");
+    assert.equal(wi.args.limit, 10);
+  });
+
+  it("recordResults truncates payload to maxResults", () => {
+    const c = indeedConnector();
+    const payload = {
+      jobs: Array.from({ length: 30 }, (_, i) => ({
+        job_id: `j-${i}`,
+        title: "Software Engineer",
+        company_name: "Co",
+        url: `https://example.com/j/${i}`
+      }))
+    };
+    const out = c.recordResults(payload, 5);
+    assert.equal(out.length, 5);
+    assert.equal(out[0].external_ref, "j-0");
+    assert.equal(out[4].external_ref, "j-4");
   });
 
   it("throws when query.source is wrong", () => {

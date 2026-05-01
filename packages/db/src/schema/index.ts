@@ -132,6 +132,7 @@ export const APPLY_SCHEMA_DDL = [
     queries_json TEXT NOT NULL,
     criteria_overlay_path TEXT,
     cadence TEXT NOT NULL,
+    max_results INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     last_run_at TEXT
@@ -174,6 +175,8 @@ export const APPLY_SCHEMA_DDL = [
     status TEXT NOT NULL,
     pre_filter_reason_code TEXT,
     job_evaluation_id TEXT,
+    cached_job_evaluation_id TEXT,
+    input_hash TEXT,
     discovered_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
   )`,
@@ -182,5 +185,22 @@ export const APPLY_SCHEMA_DDL = [
   `CREATE INDEX IF NOT EXISTS idx_discovered_postings_status ON discovered_postings(status)`,
   `CREATE INDEX IF NOT EXISTS idx_discovered_postings_source ON discovered_postings(source)`,
   `CREATE INDEX IF NOT EXISTS idx_discovered_postings_url ON discovered_postings(url)`,
-  `CREATE INDEX IF NOT EXISTS idx_discovered_postings_external_ref ON discovered_postings(source, external_ref)`
+  `CREATE INDEX IF NOT EXISTS idx_discovered_postings_external_ref ON discovered_postings(source, external_ref)`,
+  `CREATE INDEX IF NOT EXISTS idx_discovered_postings_input_hash ON discovered_postings(input_hash)`
+] as const;
+
+/**
+ * Additive column migrations applied AFTER `APPLY_SCHEMA_DDL`. SQLite
+ * doesn't support `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so each
+ * statement is wrapped in a per-statement try/catch in `applySchema`
+ * — duplicate-column errors are swallowed; everything else propagates.
+ *
+ * Pattern: when adding a new nullable column to an existing table, add
+ * the column to the CREATE TABLE block above (so fresh DBs get it) AND
+ * append the matching ALTER here (so existing on-disk DBs pick it up).
+ */
+export const ADDITIVE_COLUMN_MIGRATIONS = [
+  `ALTER TABLE saved_searches ADD COLUMN max_results INTEGER`,
+  `ALTER TABLE discovered_postings ADD COLUMN cached_job_evaluation_id TEXT`,
+  `ALTER TABLE discovered_postings ADD COLUMN input_hash TEXT`
 ] as const;

@@ -83,6 +83,7 @@ function seedSavedSearch(
       ]),
     criteria_overlay_path: null,
     cadence: "on_demand",
+    max_results: null,
     created_at: "2026-04-29T00:00:00Z",
     updated_at: "2026-04-29T00:00:00Z",
     last_run_at: null
@@ -200,6 +201,7 @@ describe("recordDiscoveredPostings", () => {
             is_onsite_required: null,
             employment_type: null,
             inferred_seniority_signals: [],
+            inferred_role_kinds: ["other"],
             raw_metadata: { url: "https://example.com/a" }
           }
         ],
@@ -267,6 +269,7 @@ describe("recordDiscoveredPostings", () => {
             is_onsite_required: null,
             employment_type: null,
             inferred_seniority_signals: [],
+            inferred_role_kinds: ["other"],
             raw_metadata: {}
           }
         ],
@@ -290,7 +293,7 @@ describe("recordDiscoveredPostings", () => {
     }
   });
 
-  it("dedupes by (source, external_ref) and links prior job_evaluation_id", async () => {
+  it("dedupes by input_hash + criteria_version_id and links prior job_evaluation_id", async () => {
     const conn = openDb({ path: ":memory:" });
     try {
       const repos = makeRepos(conn);
@@ -315,6 +318,7 @@ describe("recordDiscoveredPostings", () => {
         is_onsite_required: null,
         employment_type: null,
         inferred_seniority_signals: [],
+        inferred_role_kinds: ["other" as const],
         raw_metadata: {}
       };
 
@@ -322,17 +326,21 @@ describe("recordDiscoveredPostings", () => {
         savedSearchId: ssId,
         runId: runId1,
         criteria: baseCriteria(),
+        criteriaVersionId: "cv-1",
         postings: [posting],
         now: FIXED_NOW
       });
-      // Manually link first run's row to a synthetic eval id so we can
-      // assert the duplicate-link behavior.
+      // Manually link first run's row to a synthetic eval id with the
+      // same input_hash + criteria_version_id so the second run hits
+      // the "same-criteria, terminal verdict" branch.
       const firstId = r1.ready_for_eval_ids[0];
+      const firstRow = repos.discoveredPostings.findById(firstId);
+      const inputHash = firstRow!.input_hash!;
       const evalId = randomUUID();
       repos.jobEvaluations.insert({
         id: evalId,
-        input_hash: "hash",
-        criteria_version_id: null,
+        input_hash: inputHash,
+        criteria_version_id: "cv-1",
         extractor_version: "extract_v1",
         verdict: "accepted",
         reason_code: "",
@@ -362,16 +370,119 @@ describe("recordDiscoveredPostings", () => {
         savedSearchId: ssId,
         runId: runId2,
         criteria: baseCriteria(),
+        criteriaVersionId: "cv-1", // SAME criteria version → duplicate skip
         postings: [posting],
         now: FIXED_NOW
       });
       assert.equal(r2.duplicates_skipped, 1);
       assert.equal(r2.passed_to_eval, 0);
+      assert.equal(r2.cached_facts_reused, 0);
 
       const dupRows = repos.discoveredPostings.listBySearchRun(runId2);
       assert.equal(dupRows.length, 1);
       assert.equal(dupRows[0].status, "duplicate");
       assert.equal(dupRows[0].job_evaluation_id, evalId);
+    } finally {
+      conn.close();
+    }
+  });
+
+  it("reuses cached facts when input_hash matches a DIFFERENT criteria version", async () => {
+    const conn = openDb({ path: ":memory:" });
+    try {
+      const repos = makeRepos(conn);
+      const ssId = seedSavedSearch(conn);
+      const runId1 = randomUUID();
+      await startDiscovery(repos, {
+        savedSearchId: ssId,
+        runId: runId1,
+        queries: [],
+        connectorById: () => undefined,
+        now: FIXED_NOW
+      });
+
+      const posting = {
+        source: "greenhouse" as const,
+        external_ref: "gh-7",
+        url: "https://example.com/j/7",
+        title: "Software Engineer",
+        company: "Example",
+        description_excerpt: "Build cool things.",
+        onsite_locations: [],
+        is_onsite_required: null,
+        employment_type: null,
+        inferred_seniority_signals: [],
+        inferred_role_kinds: ["engineering" as const],
+        raw_metadata: {}
+      };
+
+      const r1 = recordDiscoveredPostings(repos, {
+        savedSearchId: ssId,
+        runId: runId1,
+        criteria: baseCriteria(),
+        criteriaVersionId: "cv-1",
+        postings: [posting],
+        now: FIXED_NOW
+      });
+      const firstId = r1.ready_for_eval_ids[0];
+      const inputHash = repos.discoveredPostings.findById(firstId)!.input_hash!;
+      const evalId = randomUUID();
+      repos.jobEvaluations.insert({
+        id: evalId,
+        input_hash: inputHash,
+        criteria_version_id: "cv-1",
+        extractor_version: "extract_v1",
+        verdict: "accepted",
+        reason_code: "",
+        short_circuited_at_stage: null,
+        stages_run_json: "[]",
+        facts_json: JSON.stringify({
+          extractor_version: "extract_v1",
+          title: "Software Engineer",
+          company: "Example",
+          seniority_signals: [],
+          required_clearance: null,
+          required_yoe: { min: null, max: null },
+          industry_tags: [],
+          required_onsite: { is_required: false, locations: [] },
+          employment_type: null,
+          work_authorization_constraints: [],
+          stack: [],
+          raw_text_excerpt: "x"
+        }),
+        hard_gate_result_json: "{}",
+        values_result_json: null,
+        soft_score_result_json: null,
+        mcp_invocation_id: null,
+        created_at: FIXED_NOW().toISOString()
+      });
+
+      // Second run with a DIFFERENT criteria_version_id → reuse facts.
+      const runId2 = randomUUID();
+      await startDiscovery(repos, {
+        savedSearchId: ssId,
+        runId: runId2,
+        queries: [],
+        connectorById: () => undefined,
+        now: FIXED_NOW
+      });
+      const r2 = recordDiscoveredPostings(repos, {
+        savedSearchId: ssId,
+        runId: runId2,
+        criteria: baseCriteria(),
+        criteriaVersionId: "cv-2", // DIFFERENT — reuse facts, re-run gates+score
+        postings: [posting],
+        now: FIXED_NOW
+      });
+
+      assert.equal(r2.duplicates_skipped, 0);
+      assert.equal(r2.cached_facts_reused, 1);
+      assert.equal(r2.passed_to_eval, 1);
+
+      // The new row carries cached_job_evaluation_id pointing to the
+      // prior evaluation.
+      const newRows = repos.discoveredPostings.listBySearchRun(runId2);
+      assert.equal(newRows[0].cached_job_evaluation_id, evalId);
     } finally {
       conn.close();
     }
@@ -441,6 +552,7 @@ describe("evaluateAllSurvivors", () => {
             is_onsite_required: null,
             employment_type: null,
             inferred_seniority_signals: [],
+            inferred_role_kinds: ["other"],
             raw_metadata: { url: "https://example.com/x" }
           }
         ],
@@ -527,6 +639,7 @@ describe("evaluateAllSurvivors", () => {
             is_onsite_required: null,
             employment_type: null,
             inferred_seniority_signals: [],
+            inferred_role_kinds: ["other"],
             raw_metadata: {}
           },
           {
@@ -540,6 +653,7 @@ describe("evaluateAllSurvivors", () => {
             is_onsite_required: null,
             employment_type: null,
             inferred_seniority_signals: [],
+            inferred_role_kinds: ["other"],
             raw_metadata: {}
           }
         ],
@@ -653,6 +767,7 @@ describe("evaluateAllSurvivors", () => {
             is_onsite_required: null,
             employment_type: null,
             inferred_seniority_signals: [],
+            inferred_role_kinds: ["other"],
             raw_metadata: {}
           }
         ],

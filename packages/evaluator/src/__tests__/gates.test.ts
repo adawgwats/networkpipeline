@@ -158,6 +158,113 @@ describe("hardGateCheck — industry blocklist", () => {
   });
 });
 
+describe("hardGateCheck — role_kind", () => {
+  it("rejects when metadata.inferred_role_kinds overlaps the blocklist", () => {
+    const facts = baseValidFacts({ title: "Account Executive" });
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          {
+            kind: "role_kind",
+            any_of: ["sales"],
+            reason: "Targeting engineering"
+          }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    const metadata = {
+      title: "Account Executive",
+      company: "Acme",
+      description_excerpt: null,
+      onsite_locations: [],
+      is_onsite_required: false,
+      employment_type: "full_time" as const,
+      inferred_seniority_signals: [],
+      inferred_role_kinds: ["sales" as const]
+    };
+    const reject = expectReject(hardGateCheck(facts, criteria, metadata));
+    assert.equal(reject.gate, "role_kind");
+    assert.equal(reject.reason_code, "hard_gate:role_kind:sales");
+  });
+
+  it("defers when no metadata is provided (manual_paste path)", () => {
+    const facts = baseValidFacts();
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          {
+            kind: "role_kind",
+            any_of: ["sales"],
+            reason: "test"
+          }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    // No metadata third arg → defer (no rejection).
+    assert.equal(hardGateCheck(facts, criteria).pass, true);
+  });
+
+  it("defers when metadata.inferred_role_kinds is only ['other']", () => {
+    const facts = baseValidFacts();
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          {
+            kind: "role_kind",
+            any_of: ["sales"],
+            reason: "test"
+          }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    const metadata = {
+      title: "Cosmic Ray Whisperer",
+      company: "Acme",
+      description_excerpt: null,
+      onsite_locations: [],
+      is_onsite_required: false,
+      employment_type: null,
+      inferred_seniority_signals: [],
+      inferred_role_kinds: ["other" as const]
+    };
+    assert.equal(hardGateCheck(facts, criteria, metadata).pass, true);
+  });
+
+  it("passes when role_kind tags do not overlap the blocklist", () => {
+    const facts = baseValidFacts();
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          {
+            kind: "role_kind",
+            any_of: ["sales", "marketing"],
+            reason: "engineering only"
+          }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    const metadata = {
+      title: "Software Engineer",
+      company: "Acme",
+      description_excerpt: null,
+      onsite_locations: [],
+      is_onsite_required: false,
+      employment_type: "full_time" as const,
+      inferred_seniority_signals: [],
+      inferred_role_kinds: ["engineering" as const]
+    };
+    assert.equal(hardGateCheck(facts, criteria, metadata).pass, true);
+  });
+});
+
 describe("hardGateCheck — required_clearance", () => {
   it("rejects required clearance posting matching the blocklist", () => {
     const facts = baseValidFacts({ required_clearance: "secret" });
@@ -493,10 +600,10 @@ describe("hardGateCheck — execution order", () => {
     assert.deepEqual(reject.gates_evaluated, ["must_not_contain_phrases"]);
   });
 
-  it("pass result lists all 10 gates in canonical order", () => {
+  it("pass result lists all 11 gates in canonical order", () => {
     const result = hardGateCheck(baseValidFacts(), baseCriteria());
     assert.equal(result.pass, true);
-    assert.equal(result.gates_evaluated.length, 10);
+    assert.equal(result.gates_evaluated.length, 11);
     assert.deepEqual(result.gates_evaluated, [...GATE_ORDER]);
   });
 });

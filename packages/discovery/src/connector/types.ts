@@ -1,4 +1,4 @@
-import type { SeniorityBand } from "@networkpipeline/criteria";
+import type { RoleKind, SeniorityBand } from "@networkpipeline/criteria";
 
 export type SourceId =
   | "indeed"
@@ -93,6 +93,13 @@ export type NormalizedDiscoveredPosting = {
     | "internship"
     | null;
   inferred_seniority_signals: SeniorityBand[];
+  /**
+   * Best-effort title-classifier output for the deterministic
+   * `role_kind` pre-extraction gate. Multi-tag is fine — see
+   * `inferRoleKindsFromTitle` for the contract. `["other"]` means
+   * "title didn't match any kind"; the gate treats that as a defer.
+   */
+  inferred_role_kinds: RoleKind[];
   /** Verbatim source response, JSON-serializable. Persisted to discovered_postings.raw_metadata_json. */
   raw_metadata: Record<string, unknown>;
 };
@@ -117,19 +124,51 @@ export interface SourceConnector {
   description(): string;
 }
 
+/**
+ * Default per-search result cap when SavedSearch.max_results is null.
+ * Tuned to keep typical run cost under $0.50 even on a fanned-out
+ * search across 6 sources. Configurable via SavedSearch.max_results
+ * up to a hard ceiling of 500.
+ */
+export const DEFAULT_MAX_RESULTS = 50;
+
 export interface InstructionSourceConnector extends SourceConnector {
   kind: "instruction";
-  discoverInstruction(query: SourceQuery, runId: string): IngestInstruction;
+  /**
+   * `maxResults` is the per-search posting cap. Defaults to
+   * DEFAULT_MAX_RESULTS. Instruction connectors forward it to the
+   * downstream Claude tool (e.g., Indeed `limit` arg) AND truncate
+   * their `recordResults` output to be safe.
+   */
+  discoverInstruction(
+    query: SourceQuery,
+    runId: string,
+    maxResults?: number
+  ): IngestInstruction;
   /**
    * Called by the orchestrator with the raw payload Claude returns
    * after executing the instruction. Returns the normalized postings.
+   * Truncates to `maxResults` (default DEFAULT_MAX_RESULTS) so an
+   * over-eager Claude can't blow past the cap.
    */
-  recordResults(payload: unknown): NormalizedDiscoveredPosting[];
+  recordResults(
+    payload: unknown,
+    maxResults?: number
+  ): NormalizedDiscoveredPosting[];
 }
 
 export interface DirectFetchSourceConnector extends SourceConnector {
   kind: "direct";
-  discoverDirect(query: SourceQuery): Promise<DirectFetchResult>;
+  /**
+   * `maxResults` is the per-search posting cap. Defaults to
+   * DEFAULT_MAX_RESULTS. Connectors fetch normally and truncate the
+   * normalized result list AFTER mapping (so the truncation is on
+   * the SAME order the source returned, not random).
+   */
+  discoverDirect(
+    query: SourceQuery,
+    maxResults?: number
+  ): Promise<DirectFetchResult>;
 }
 
 export type AnyConnector =

@@ -1,7 +1,11 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import type { CandidateCriteria } from "@networkpipeline/criteria";
-import { evaluateJob, MockJsonOutputProvider } from "../index.js";
+import {
+  evaluateJob,
+  evaluateJobWithCachedFacts,
+  MockJsonOutputProvider
+} from "../index.js";
 import { baseValidFacts } from "./fixtures.js";
 
 function baseCriteria(
@@ -257,5 +261,123 @@ describe("evaluateJob — observability", () => {
     assert.equal(out.criteria_version, 42);
     assert.ok(out.input_hash.length > 0);
     assert.equal(out.extractor_version, "extract_v1");
+  });
+});
+
+describe("evaluateJobWithCachedFacts — extract is replaced with synthetic ProviderRun", () => {
+  it("does NOT call the provider for extract; runs gates+values+score", async () => {
+    // Provider only enqueues responses for the soft_score stage —
+    // values_check short-circuits because refusals are empty, and
+    // extract is replaced by the synthetic cached ProviderRun.
+    const provider = new MockJsonOutputProvider([
+      {
+        score: 0.9,
+        contributions: [
+          {
+            topic: "AI/ML evaluation systems",
+            weight: 1.0,
+            contribution: 0.9,
+            rationale: "match"
+          }
+        ],
+        rationale: "Strong"
+      }
+    ]);
+
+    const criteria = baseCriteria();
+    criteria.soft_preferences.positive.push({
+      topic: "AI/ML evaluation systems",
+      weight: 1.0
+    });
+
+    const cachedFacts = baseValidFacts({
+      title: "Research Engineer",
+      company: "Anthropic",
+      industry_tags: ["ai_ml", "research"]
+    });
+
+    const out = await evaluateJobWithCachedFacts(
+      provider,
+      {
+        facts: cachedFacts,
+        inputHash: "deadbeef",
+        extractorVersion: "extract_v1"
+      },
+      criteria
+    );
+
+    assert.equal(out.verdict, "accepted");
+    // 4 ProviderRuns: cached extract + skipped values + scored.
+    assert.equal(out.provider_runs.length, 3);
+    assert.equal(out.provider_runs[0].provider, "cached");
+    assert.equal(out.provider_runs[0].cost_usd_cents, 0);
+    assert.equal(out.provider_runs[0].input_tokens, 0);
+    // Threaded values come from the args.
+    assert.equal(out.input_hash, "deadbeef");
+    assert.equal(out.extractor_version, "extract_v1");
+  });
+
+  it("rejects via hard_gate without burning extract budget", async () => {
+    const provider = new MockJsonOutputProvider([]); // no responses needed
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          { kind: "company", any_of: ["Anduril"], reason: "values" }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    const cachedFacts = baseValidFacts({ company: "Anduril" });
+    const out = await evaluateJobWithCachedFacts(
+      provider,
+      {
+        facts: cachedFacts,
+        inputHash: "h",
+        extractorVersion: "extract_v1"
+      },
+      criteria
+    );
+    assert.equal(out.verdict, "rejected");
+    assert.equal(out.short_circuited_at_stage, "hard_gate");
+    // Only the synthetic cached extract run; no real provider calls.
+    assert.equal(out.provider_runs.length, 1);
+    assert.equal(out.provider_runs[0].provider, "cached");
+  });
+
+  it("forwards metadata to the role_kind gate", async () => {
+    const provider = new MockJsonOutputProvider([]);
+    const criteria = baseCriteria({
+      hard_gates: {
+        must_have: [],
+        must_not_have: [
+          { kind: "role_kind", any_of: ["sales"], reason: "engineering only" }
+        ],
+        must_not_contain_phrases: []
+      }
+    });
+    const cachedFacts = baseValidFacts({ title: "Account Executive" });
+    const out = await evaluateJobWithCachedFacts(
+      provider,
+      {
+        facts: cachedFacts,
+        inputHash: "h",
+        extractorVersion: "extract_v1"
+      },
+      criteria,
+      {
+        title: "Account Executive",
+        company: "Acme",
+        description_excerpt: null,
+        onsite_locations: [],
+        is_onsite_required: false,
+        employment_type: "full_time",
+        inferred_seniority_signals: [],
+        inferred_role_kinds: ["sales"]
+      }
+    );
+    assert.equal(out.verdict, "rejected");
+    if (out.hard_gate_result.pass) throw new Error("expected reject");
+    assert.equal(out.hard_gate_result.gate, "role_kind");
   });
 });
