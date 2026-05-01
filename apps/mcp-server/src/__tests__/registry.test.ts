@@ -8,6 +8,7 @@ import {
   DiscoveredPostingsRepository,
   JobEvaluationsRepository,
   McpInvocationsRepository,
+  PendingEvaluationsRepository,
   ProviderRunsRepository,
   SavedSearchesRepository,
   SearchRunsRepository,
@@ -52,7 +53,8 @@ function makeRuntime(provider: MockJsonOutputProvider): Runtime {
     criteriaVersions: new CandidateCriteriaVersionsRepository(connection.db),
     savedSearches: new SavedSearchesRepository(connection.db),
     searchRuns: new SearchRunsRepository(connection.db),
-    discoveredPostings: new DiscoveredPostingsRepository(connection.db)
+    discoveredPostings: new DiscoveredPostingsRepository(connection.db),
+    pendingEvaluations: new PendingEvaluationsRepository(connection.db)
   };
   return {
     criteria: baseCriteria(),
@@ -193,9 +195,13 @@ describe("evaluate_job tool — wiring against the registry", () => {
 
     assert.equal(out.ok, true);
     if (!out.ok) return;
-    const verdict = out.output as { verdict: string; reason_code: string };
-    assert.equal(verdict.verdict, "rejected");
-    assert.ok(verdict.reason_code.startsWith("hard_gate:company"));
+    const wrapped = out.output as {
+      kind: "completed" | "needs_llm";
+      result?: { verdict: string; reason_code: string };
+    };
+    assert.equal(wrapped.kind, "completed");
+    assert.equal(wrapped.result!.verdict, "rejected");
+    assert.ok(wrapped.result!.reason_code.startsWith("hard_gate:company"));
   });
 
   it("rejects empty text via the input schema, not the handler", async () => {

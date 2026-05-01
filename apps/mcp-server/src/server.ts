@@ -15,6 +15,7 @@ import { makeDiscoverJobsTool } from "./tools/discover-jobs.js";
 import { makeEvaluateJobTool } from "./tools/evaluate-job.js";
 import { makeListSavedSearchesTool } from "./tools/list-saved-searches.js";
 import { makeRecordDiscoveredPostingsTool } from "./tools/record-discovered-postings.js";
+import { makeRecordLlmResultTool } from "./tools/record-llm-result.js";
 import { makeRunSavedSearchTool } from "./tools/run-saved-search.js";
 
 export type BuildServerOptions = {
@@ -55,6 +56,7 @@ export function buildServer(options: BuildServerOptions) {
   // Register V1 tools. Future tools (find_intro_paths, draft_*, etc.)
   // get added here as they land.
   registry.register(makeEvaluateJobTool(options.runtime));
+  registry.register(makeRecordLlmResultTool(options.runtime));
 
   // Discovery — saved-search CRUD.
   registry.register(makeCreateSavedSearchTool(options.runtime));

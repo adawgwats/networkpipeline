@@ -13,9 +13,3 @@ export {
   DEFAULT_ANTHROPIC_MODEL,
   type AnthropicAdapterOptions
 } from "./anthropic.js";
-
-export {
-  ClaudeCodeJsonOutputProvider,
-  type ClaudeCodeAdapterOptions,
-  type SamplingDelegate
-} from "./claude_code.js";
