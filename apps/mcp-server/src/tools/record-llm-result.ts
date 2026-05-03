@@ -89,10 +89,26 @@ export function makeRecordLlmResultTool(
         );
       }
 
+      // Some MCP transports (notably Claude Code v2.1.x) flatten nested
+      // object inputs into JSON-encoded strings on the wire. Detect that
+      // case and re-parse so the state machine sees a real object.
+      let parsedOutput: unknown = input.output;
+      if (typeof parsedOutput === "string") {
+        const trimmed = parsedOutput.trim();
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+          try {
+            parsedOutput = JSON.parse(trimmed);
+          } catch {
+            // Leave as-is; downstream Zod validation will reject and
+            // produce a fresh retry call.
+          }
+        }
+      }
+
       const advanced = advancePending(
         runtime.repositories,
         row,
-        input.output
+        parsedOutput
       );
 
       if (advanced.kind === "failed") {
